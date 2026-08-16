@@ -100,13 +100,12 @@ export default function App() {
   const [showClubOnboardingModal, setShowClubOnboardingModal] = useState(false);
   const [onboardingTab, setOnboardingTab] = useState('CREATE');
   const [authError, setAuthError] = useState('');
+  const [onboardingError, setOnboardingError] = useState('');
 
   // Form State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [discipline, setDiscipline] = useState('Fast Bowler');
-  const [bowlingArm, setBowlingArm] = useState('Right-Arm Fast');
 
   const [newClubName, setNewClubName] = useState('');
   const [newClubCode, setNewClubCode] = useState('');
@@ -134,6 +133,13 @@ export default function App() {
   const [notification, setNotification] = useState(null);
   const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false);
   const [playerScheduleViewMode, setPlayerScheduleViewMode] = useState('spotlight');
+
+  // Pagination & Calendar Jump State
+  const [personalPlansPage, setPersonalPlansPage] = useState(1);
+  const [clubSessionsPage, setClubSessionsPage] = useState(1);
+  const [personalDateJump, setPersonalDateJump] = useState('');
+  const [clubDateJump, setClubDateJump] = useState('');
+  const ITEMS_PER_PAGE = 5;
 
   // Verification & Form Modals
   const [completionTarget, setCompletionTarget] = useState(null);
@@ -198,8 +204,8 @@ export default function App() {
               uid: firebaseUser.uid,
               name: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Athlete'),
               email: firebaseUser.email,
-              discipline: discipline || 'Fast Bowler',
-              bowlingArm: bowlingArm || 'Right-Arm Fast'
+              discipline: 'Fast Bowler',
+              bowlingArm: 'Right-Arm Fast'
             };
             await setDoc(userDocRef, profileData);
             setUserProfile(profileData);
@@ -210,8 +216,8 @@ export default function App() {
             uid: firebaseUser.uid,
             name: firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Athlete',
             email: firebaseUser.email,
-            discipline: discipline,
-            bowlingArm: bowlingArm
+            discipline: 'Fast Bowler',
+            bowlingArm: 'Right-Arm Fast'
           });
         }
       } else {
@@ -229,12 +235,12 @@ export default function App() {
         uid: auth.currentUser.uid,
         name: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Athlete',
         email: auth.currentUser.email,
-        discipline: discipline || 'Fast Bowler',
-        bowlingArm: bowlingArm || 'Right-Arm Fast'
+        discipline: 'Fast Bowler',
+        bowlingArm: 'Right-Arm Fast'
       };
     }
     return { uid: 'guest-user', name: 'Guest Athlete', email: 'guest@creasecraft.pro', discipline: 'Fast Bowler', bowlingArm: 'Right-Arm Fast' };
-  }, [userProfile, discipline, bowlingArm]);
+  }, [userProfile]);
 
   useEffect(() => {
     if (!db) {
@@ -303,8 +309,8 @@ export default function App() {
           uid: user.uid,
           name: fullName.trim() || email.split('@')[0],
           email: email.trim(),
-          discipline: discipline,
-          bowlingArm: bowlingArm,
+          discipline: 'Fast Bowler',
+          bowlingArm: 'Right-Arm Fast',
           createdAt: new Date().toISOString()
         };
 
@@ -345,7 +351,7 @@ export default function App() {
   
   const currentClub = useMemo(() => {
     if (isPersonalWorkspace) {
-      return { id: 'club-personal', name: 'Personal / Independent Workspace', code: 'IND', squads: [], customRoles: [] };
+      return { id: 'club-personal', name: 'Personal', code: 'IND', squads: [], customRoles: [] };
     }
     const found = clubs.find(c => c.id === activeClubId);
     if (found) {
@@ -404,23 +410,44 @@ export default function App() {
 
   const userPersonalPlans = useMemo(() => {
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
-    return personalPlans.filter(p => 
+    let filtered = personalPlans.filter(p => 
       p.userId === activeUid || 
       p.userId === userProfile?.uid || 
       (auth.currentUser && p.userId === auth.currentUser.uid) ||
       !p.userId
     );
-  }, [personalPlans, currentHuman, userProfile]);
+    filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  // BULLETPROOF PLAYER-FACING PUBLISHED ZONE PLANS (Hides hidden plans unless user has explicit coach/admin management capability)
+    if (personalDateJump) {
+      filtered = filtered.filter(p => p.date === personalDateJump);
+    }
+    return filtered;
+  }, [personalPlans, currentHuman, userProfile, personalDateJump]);
+
   const publishedZonePlans = useMemo(() => {
     const isPlanCreatorOrAdmin = can('create_zone_plans') || can('edit_zone_plans');
-    return zonePlans.filter(p => {
+    let filtered = zonePlans.filter(p => {
       if (p.clubId !== activeClubId) return false;
       if (p.visibleToPlayers === false && !isPlanCreatorOrAdmin) return false;
       return true;
     });
-  }, [zonePlans, activeClubId, can]);
+    filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    if (clubDateJump) {
+      filtered = filtered.filter(p => p.date === clubDateJump);
+    }
+    return filtered;
+  }, [zonePlans, activeClubId, can, clubDateJump]);
+
+  const paginatedPersonalPlans = useMemo(() => {
+    const start = (personalPlansPage - 1) * ITEMS_PER_PAGE;
+    return userPersonalPlans.slice(start, start + ITEMS_PER_PAGE);
+  }, [userPersonalPlans, personalPlansPage]);
+
+  const paginatedClubSessions = useMemo(() => {
+    const start = (clubSessionsPage - 1) * ITEMS_PER_PAGE;
+    return publishedZonePlans.slice(start, start + ITEMS_PER_PAGE);
+  }, [publishedZonePlans, clubSessionsPage]);
 
   const resolveMemberFullName = (userId) => {
     const foundUser = allUsers.find(u => u.uid === userId || u.id === userId);
@@ -502,6 +529,7 @@ export default function App() {
 
   const handleJoinClub = async (e) => {
     e.preventDefault();
+    setOnboardingError('');
     if (!joinClubCode.trim()) return;
     
     const targetCode = joinClubCode.trim().toUpperCase();
@@ -509,15 +537,13 @@ export default function App() {
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
     
     if (!foundClub) {
-      triggerNotify('No club found with code "' + targetCode + '". Check code and try again.', 'info');
+      setOnboardingError('No club found with code "' + targetCode + '". Check code and try again.');
       return;
     }
 
     const existing = memberships.find(m => (m.userId === activeUid || m.userId === currentHuman.uid) && m.clubId === foundClub.id);
     if (existing) {
-      setActiveClubId(foundClub.id);
-      setShowClubOnboardingModal(false);
-      triggerNotify('Switched to workspace: ' + foundClub.name, 'info');
+      setOnboardingError('You are already a member of this club!');
       return;
     }
 
@@ -534,9 +560,11 @@ export default function App() {
       setActiveTab('dashboard');
       setShowClubOnboardingModal(false);
       setJoinClubCode('');
+      setOnboardingError('');
       triggerNotify('Successfully joined ' + foundClub.name + ' as Player!', 'success');
     } catch (err) {
       console.error("Error joining club:", err);
+      setOnboardingError('Failed to join club. Please try again.');
     }
   };
 
@@ -603,7 +631,7 @@ export default function App() {
       );
     } else {
       setEditingPlanId(null);
-      setNewPlanTitle('Private Throwdowns & Run-up Rhythm');
+      setNewPlanTitle('Personal Throwdowns & Run-up Rhythm');
       setNewPlanDate(todayFormatted);
       setNewPlanTime('4:00 PM - 5:30 PM');
       setPersonalPlanBalls(36);
@@ -671,7 +699,7 @@ export default function App() {
       if (editingPlanId) {
         const planRef = doc(db, 'personal_plans', editingPlanId);
         await updateDoc(planRef, {
-          title: newPlanTitle || 'Private Session',
+          title: newPlanTitle || 'Personal Session',
           date: newPlanDate,
           time: newPlanTime,
           balls: Number(personalPlanBalls) || 36,
@@ -683,7 +711,7 @@ export default function App() {
       } else {
         await addDoc(collection(db, 'personal_plans'), {
           userId: activeUid,
-          title: newPlanTitle || 'Private Session',
+          title: newPlanTitle || 'Personal Session',
           date: newPlanDate,
           time: newPlanTime,
           balls: Number(personalPlanBalls) || 36,
@@ -847,42 +875,11 @@ export default function App() {
               />
             </div>
 
-            {authMode === 'SIGNUP' && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Discipline</label>
-                  <select
-                    value={discipline}
-                    onChange={(e) => setDiscipline(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
-                  >
-                    <option value="Fast Bowler">Fast Bowler</option>
-                    <option value="Spin Bowler">Spin Bowler</option>
-                    <option value="Batter">Batter</option>
-                    <option value="Coach">Coach</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Bowling Arm</label>
-                  <select
-                    value={bowlingArm}
-                    onChange={(e) => setBowlingArm(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
-                  >
-                    <option value="Right-Arm Fast">Right-Arm Fast</option>
-                    <option value="Left-Arm Fast">Left-Arm Fast</option>
-                    <option value="Right-Arm Spin">Right-Arm Spin</option>
-                    <option value="Left-Arm Spin">Left-Arm Spin</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
             <button
               type="submit"
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3.5 rounded-xl transition-all shadow mt-2"
             >
-              {authMode === 'SIGNIN' ? 'Sign In & Launch Workspace ✓' : 'Create Firebase Account ✓'}
+              {authMode === 'SIGNIN' ? "Let's Play" : 'I Love Cricket'}
             </button>
           </form>
 
@@ -946,7 +943,7 @@ export default function App() {
                     Select Active Workspace
                   </div>
 
-                  {/* FIXED PERSONAL WORKSPACE BUTTON */}
+                  {/* PERSONAL WORKSPACE BUTTON */}
                   <button
                     onClick={() => {
                       setActiveClubId('club-personal');
@@ -961,8 +958,8 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <span>👤</span>
                       <div>
-                        <span className="block font-bold">Personal / Independent Workspace</span>
-                        <span className="text-[10px] text-slate-400 font-normal">Private throwdowns & self-training</span>
+                        <span className="block font-bold">Personal</span>
+                        <span className="text-[10px] text-slate-400 font-normal">Personal throwdowns & self-training</span>
                       </div>
                     </div>
                     {isPersonalWorkspace && <span className="text-xs">✓</span>}
@@ -1019,10 +1016,11 @@ export default function App() {
                       onClick={() => {
                         setShowWorkspaceDropdown(false);
                         setShowClubOnboardingModal(true);
+                        setOnboardingError('');
                       }}
                       className="w-full bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 font-bold p-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all text-xs"
                     >
-                      <IconPlus /> Create or Join Another Club
+                      <IconPlus /> Create or Join A Club
                     </button>
                   </div>
                 </div>
@@ -1033,7 +1031,6 @@ export default function App() {
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               <div className="text-left">
                 <span className="font-bold text-slate-100 block text-[11px]">{currentHuman.name}</span>
-                <span className="text-[9px] text-slate-400">{currentHuman.discipline}</span>
               </div>
               <button
                 onClick={handleSignOut}
@@ -1140,9 +1137,6 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-xl font-extrabold text-white">{currentHuman.name}</h2>
-                  <span className="text-xs bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded font-bold border border-emerald-500/20">
-                    {currentHuman.discipline}
-                  </span>
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
                   Workspace: <strong className="text-slate-200">{currentClub.name}</strong> | Arm: {currentHuman.bowlingArm}
@@ -1157,7 +1151,7 @@ export default function App() {
                   }}
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-1.5"
                 >
-                  <IconPlus /> Plan Private Session
+                  <IconPlus /> Plan Personal Session
                 </button>
               </div>
             </div>
@@ -1248,7 +1242,7 @@ export default function App() {
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-lg font-extrabold text-white flex items-center gap-2">
-                  <IconUser /> Personal Training & Private Practice Planner
+                  <IconUser /> Personal Training Planner
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
                   Schedule and track self-directed throwdowns, machine sessions, or gym work outside of official club practices.
@@ -1258,164 +1252,228 @@ export default function App() {
                 onClick={() => handleOpenPersonalPlanModal()}
                 className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-1.5"
               >
-                <IconPlus /> Plan Private Session
+                <IconPlus /> Plan Personal Session
               </button>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               <div className="lg:col-span-2 space-y-4">
-                <h3 className="font-bold text-sm text-slate-200">Upcoming & Saved Private Sessions</h3>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <h3 className="font-bold text-sm text-slate-200">Personal Sessions ({userPersonalPlans.length})</h3>
+                  
+                  {/* CALENDAR DATE JUMPER & RESET */}
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-400 font-semibold">📅 Jump to Date:</span>
+                    <input
+                      type="date"
+                      value={personalDateJump}
+                      onChange={(e) => {
+                        setPersonalDateJump(e.target.value);
+                        setPersonalPlansPage(1);
+                      }}
+                      className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    />
+                    {personalDateJump && (
+                      <button
+                        onClick={() => { setPersonalDateJump(''); setPersonalPlansPage(1); }}
+                        className="bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-slate-800 px-2.5 py-1.5 rounded-xl font-bold"
+                      >
+                        Show All
+                      </button>
+                    )}
+                  </div>
+                </div>
 
                 {userPersonalPlans.length === 0 ? (
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center space-y-3">
                     <div className="h-12 w-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto text-xl">
                       🏏
                     </div>
-                    <h4 className="font-bold text-sm text-white">No Private Sessions Planned Yet</h4>
+                    <h4 className="font-bold text-sm text-white">No Personal Sessions Found</h4>
                     <p className="text-xs text-slate-400 max-w-md mx-auto">
-                      Plan your solo throwdown practices, bowling machine reps, or gym mobility sessions to keep your ACWR workload accurately synced!
+                      {personalDateJump ? `No personal sessions found for date ${personalDateJump}.` : "Plan your solo throwdown practices, bowling machine reps, or gym mobility sessions!"}
                     </p>
-                    <button
-                      onClick={() => handleOpenPersonalPlanModal()}
-                      className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition-all inline-flex items-center gap-1.5"
-                    >
-                      <IconPlus /> Create First Private Plan
-                    </button>
+                    {personalDateJump ? (
+                      <button
+                        onClick={() => setPersonalDateJump('')}
+                        className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition-all inline-flex items-center gap-1.5"
+                      >
+                        Clear Date Filter
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleOpenPersonalPlanModal()}
+                        className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition-all inline-flex items-center gap-1.5"
+                      >
+                        <IconPlus /> Create First Personal Plan
+                      </button>
+                    )}
                   </div>
                 ) : (
-                  userPersonalPlans.map(plan => {
-                    const isPastPlan = plan.date < todayFormatted;
-                    const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
-                    return (
-                      <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-extrabold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                                👤 Personal
-                              </span>
-                              <h4 className="font-bold text-base text-white">{plan.title}</h4>
+                  <div className="space-y-4">
+                    {paginatedPersonalPlans.map(plan => {
+                      const isPastPlan = plan.date < todayFormatted;
+                      const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
+                      return (
+                        <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-extrabold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
+                                  👤 Personal
+                                </span>
+                                <h4 className="font-bold text-base text-white">{plan.title}</h4>
+                              </div>
+                              <span className="text-xs text-slate-400 mt-1 block">📅 Date: {plan.date} | ⏰ {plan.time}</span>
                             </div>
-                            <span className="text-xs text-slate-400 mt-1 block">📅 Date: {plan.date} | ⏰ {plan.time}</span>
-                          </div>
 
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() => {
-                                if (isPastPlan) return;
-                                handleOpenPersonalPlanModal(plan);
-                              }}
-                              disabled={isPastPlan}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                isPastPlan 
-                                  ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
-                                  : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
-                              }`}
-                            >
-                              ✏️ Edit
-                            </button>
-
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const duplicatedPlan = {
-                                    userId: currentHuman.uid || auth.currentUser?.uid,
-                                    title: plan.title + ' (Copy)',
-                                    date: nextWeekFormatted,
-                                    time: plan.time || '4:00 PM - 5:30 PM',
-                                    balls: plan.balls || 36,
-                                    rpe: plan.rpe || 7,
-                                    notes: plan.notes || '',
-                                    activities: plan.activities || [],
-                                    scope: 'PERSONAL',
-                                    createdAt: new Date().toISOString()
-                                  };
-                                  await addDoc(collection(db, 'personal_plans'), duplicatedPlan);
-                                  triggerNotify('Duplicated session for next week! ✓', 'success');
-                                } catch (err) {
-                                  console.error("Error duplicating session:", err);
-                                }
-                              }}
-                              className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                            >
-                              📋 Duplicate
-                            </button>
-
-                            <button
-                              onClick={async () => {
-                                if (isPastPlan) return;
-                                const planRef = doc(db, 'personal_plans', plan.id);
-                                await deleteDoc(planRef);
-                                triggerNotify('Personal session deleted from Firestore.', 'info');
-                              }}
-                              disabled={isPastPlan}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                isPastPlan 
-                                  ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
-                                  : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
-                              }`}
-                            >
-                              Delete Plan
-                            </button>
-
-                            {isPastPlan && (
+                            <div className="flex flex-wrap items-center gap-2">
                               <button
                                 onClick={() => {
-                                  if (!isVerified) {
-                                    setCompletionTarget({
-                                      planId: plan.id,
-                                      id: plan.id,
-                                      title: plan.title,
-                                      balls: plan.balls || 36,
-                                      rpe: plan.rpe || 7
-                                    });
-                                    setActualBalls(plan.balls || 36);
-                                    setActualRPE(plan.rpe || 7);
-                                  }
+                                  if (isPastPlan) return;
+                                  handleOpenPersonalPlanModal(plan);
                                 }}
-                                disabled={isVerified}
+                                disabled={isPastPlan}
                                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                  isVerified 
-                                    ? 'bg-slate-800 text-slate-500 cursor-default' 
-                                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                  isPastPlan 
+                                    ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
+                                    : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
                                 }`}
                               >
-                                {isVerified ? '✓ Verified' : '✓ Verify & Log'}
+                                ✏️ Edit
                               </button>
-                            )}
-                          </div>
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-3 text-xs">
-                          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                            <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Volume</span>
-                            <span className="font-bold text-emerald-400 text-sm">{plan.balls || 36} Deliveries</span>
-                          </div>
-                          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                            <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Effort (RPE)</span>
-                            <span className="font-bold text-amber-400 text-sm">RPE {plan.rpe || 7} / 10</span>
-                          </div>
-                        </div>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    const duplicatedPlan = {
+                                      userId: currentHuman.uid || auth.currentUser?.uid,
+                                      title: plan.title + ' (Copy)',
+                                      date: nextWeekFormatted,
+                                      time: plan.time || '4:00 PM - 5:30 PM',
+                                      balls: plan.balls || 36,
+                                      rpe: plan.rpe || 7,
+                                      notes: plan.notes || '',
+                                      activities: plan.activities || [],
+                                      scope: 'PERSONAL',
+                                      createdAt: new Date().toISOString()
+                                    };
+                                    await addDoc(collection(db, 'personal_plans'), duplicatedPlan);
+                                    triggerNotify('Duplicated session for next week! ✓', 'success');
+                                  } catch (err) {
+                                    console.error("Error duplicating session:", err);
+                                  }
+                                }}
+                                className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                              >
+                                📋 Duplicate
+                              </button>
 
-                        {plan.activities && plan.activities.some(a => a && a.trim() !== '') && (
-                          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
-                            <span className="text-[10px] text-slate-400 uppercase font-bold block">Planned Session Activities</span>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                              {plan.activities.map((act, i) => act && act.trim() ? (
-                                <div key={i} className="flex items-center gap-2 bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-slate-800/80">
-                                  <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                                    {i + 1}
-                                  </span>
-                                  <span className="text-slate-200 text-[11px] truncate">{act}</span>
-                                </div>
-                              ) : null)}
+                              <button
+                                onClick={async () => {
+                                  if (isPastPlan) return;
+                                  const planRef = doc(db, 'personal_plans', plan.id);
+                                  await deleteDoc(planRef);
+                                  triggerNotify('Personal session deleted from Firestore.', 'info');
+                                }}
+                                disabled={isPastPlan}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                  isPastPlan 
+                                    ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
+                                    : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
+                                }`}
+                              >
+                                Delete Plan
+                              </button>
+
+                              {isPastPlan && (
+                                <button
+                                  onClick={() => {
+                                    if (!isVerified) {
+                                      setCompletionTarget({
+                                        planId: plan.id,
+                                        id: plan.id,
+                                        title: plan.title,
+                                        balls: plan.balls || 36,
+                                        rpe: plan.rpe || 7
+                                      });
+                                      setActualBalls(plan.balls || 36);
+                                      setActualRPE(plan.rpe || 7);
+                                    }
+                                  }}
+                                  disabled={isVerified}
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                    isVerified 
+                                      ? 'bg-slate-800 text-slate-500 cursor-default' 
+                                      : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                  }`}
+                                >
+                                  {isVerified ? '✓ Verified' : '✓ Verify & Log'}
+                                </button>
+                              )}
                             </div>
                           </div>
-                        )}
+
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Volume</span>
+                              <span className="font-bold text-emerald-400 text-sm">{plan.balls || 36} Deliveries</span>
+                            </div>
+                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Effort (RPE)</span>
+                              <span className="font-bold text-amber-400 text-sm">RPE {plan.rpe || 7} / 10</span>
+                            </div>
+                          </div>
+
+                          {plan.activities && plan.activities.some(a => a && a.trim() !== '') && (
+                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Planned Session Activities</span>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                                {plan.activities.map((act, i) => act && act.trim() ? (
+                                  <div key={i} className="flex items-center gap-2 bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-slate-800/80">
+                                    <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                                      {i + 1}
+                                    </span>
+                                    <span className="text-slate-200 text-[11px] truncate">{act}</span>
+                                  </div>
+                                ) : null)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* PAGINATION CONTROLS */}
+                    {userPersonalPlans.length > ITEMS_PER_PAGE && (
+                      <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs">
+                        <span className="text-slate-400 font-semibold">
+                          Showing page {personalPlansPage} of {Math.ceil(userPersonalPlans.length / ITEMS_PER_PAGE)}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setPersonalPlansPage(p => Math.max(1, p - 1))}
+                            disabled={personalPlansPage === 1}
+                            className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                              personalPlansPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                            }`}
+                          >
+                            ← Previous
+                          </button>
+                          <button
+                            onClick={() => setPersonalPlansPage(p => (p * ITEMS_PER_PAGE < userPersonalPlans.length ? p + 1 : p))}
+                            disabled={personalPlansPage * ITEMS_PER_PAGE >= userPersonalPlans.length}
+                            className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                              personalPlansPage * ITEMS_PER_PAGE >= userPersonalPlans.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                            }`}
+                          >
+                            Next →
+                          </button>
+                        </div>
                       </div>
-                    );
-                  })
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -1495,280 +1553,333 @@ export default function App() {
               )}
             </div>
 
+            {/* CALENDAR DATE JUMPER FOR CLUB SESSIONS */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs">
+              <span className="font-bold text-slate-200">
+                Club Sessions Found ({publishedZonePlans.length})
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 font-semibold">📅 Jump to Date:</span>
+                <input
+                  type="date"
+                  value={clubDateJump}
+                  onChange={(e) => {
+                    setClubDateJump(e.target.value);
+                    setClubSessionsPage(1);
+                  }}
+                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+                {clubDateJump && (
+                  <button
+                    onClick={() => { setClubDateJump(''); setClubSessionsPage(1); }}
+                    className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold"
+                  >
+                    Show All
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="space-y-4">
               {publishedZonePlans.length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  No published club sessions currently available for your squad.
+                  {clubDateJump ? `No published club sessions found for date ${clubDateJump}.` : "No published club sessions currently available for your squad."}
                 </div>
               ) : (
-                publishedZonePlans.map(plan => {
-                  const slot = plan.timeSlots?.[0];
-                  const isPastOrToday = plan.date <= todayFormatted;
-                  const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
-                  const availableSquads = currentClub.squads || [];
-                  const allCustomZones = slot?.customZones || [
-                    { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
-                    { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'High-Ball & Boundary Relay Catching', squadIds: [] }
-                  ];
+                <div className="space-y-4">
+                  {paginatedClubSessions.map(plan => {
+                    const slot = plan.timeSlots?.[0];
+                    const isPastOrToday = plan.date <= todayFormatted;
+                    const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
+                    const availableSquads = currentClub.squads || [];
+                    const allCustomZones = slot?.customZones || [
+                      { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
+                      { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'High-Ball & Boundary Relay Catching', squadIds: [] }
+                    ];
 
-                  const filteredNetLanes = playerScheduleViewMode === 'all' ? (slot?.netLanes || []) : (slot?.netLanes || []).filter(lane => {
-                    if (!lane.batters && !lane.bowlersText) return false;
-                    return lane.batters?.toLowerCase().includes(currentHuman.name.toLowerCase()) ||
-                           lane.bowlersText?.toLowerCase().includes(currentHuman.name.toLowerCase());
-                  });
+                    const filteredNetLanes = playerScheduleViewMode === 'all' ? (slot?.netLanes || []) : (slot?.netLanes || []).filter(lane => {
+                      if (!lane.batters && !lane.bowlersText) return false;
+                      return lane.batters?.toLowerCase().includes(currentHuman.name.toLowerCase()) ||
+                             lane.bowlersText?.toLowerCase().includes(currentHuman.name.toLowerCase());
+                    });
 
-                  const filteredCustomZones = playerScheduleViewMode === 'all' ? allCustomZones : allCustomZones.filter(zone => {
-                    const zSquads = zone.squadIds || [];
-                    if (zSquads.length === 0) return false;
-                    return zSquads.some(sqId => currentUserAssignedSquadIds.includes(sqId));
-                  });
+                    const filteredCustomZones = playerScheduleViewMode === 'all' ? allCustomZones : allCustomZones.filter(zone => {
+                      const zSquads = zone.squadIds || [];
+                      if (zSquads.length === 0) return false;
+                      return zSquads.some(sqId => currentUserAssignedSquadIds.includes(sqId));
+                    });
 
-                  const hasRelevantContent = filteredNetLanes.length > 0 || filteredCustomZones.length > 0;
+                    const hasRelevantContent = filteredNetLanes.length > 0 || filteredCustomZones.length > 0;
 
-                  // SPOTLIGHT VIEW CLEANUP FIX: Skip rendering entirely if player has no net lanes or assigned squad zones
-                  if (playerScheduleViewMode === 'spotlight' && !hasRelevantContent) return null;
+                    if (playerScheduleViewMode === 'spotlight' && !hasRelevantContent) return null;
 
-                  // Poll computations for this session
-                  const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
-                  const attendingCount = sessionPollResponses.filter(pr => pr.status === 'ATTENDING').length;
-                  const declinedCount = sessionPollResponses.filter(pr => pr.status === 'DECLINED').length;
-                  const maybeCount = sessionPollResponses.filter(pr => pr.status === 'MAYBE').length;
+                    const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
+                    const attendingCount = sessionPollResponses.filter(pr => pr.status === 'ATTENDING').length;
+                    const declinedCount = sessionPollResponses.filter(pr => pr.status === 'DECLINED').length;
+                    const maybeCount = sessionPollResponses.filter(pr => pr.status === 'MAYBE').length;
 
-                  const activeUserUid = currentHuman.uid || auth.currentUser?.uid;
-                  const myPollResponse = sessionPollResponses.find(pr => pr.userId === activeUserUid);
+                    const activeUserUid = currentHuman.uid || auth.currentUser?.uid;
+                    const myPollResponse = sessionPollResponses.find(pr => pr.userId === activeUserUid);
 
-                  // Relevance check for poll in spotlight view:
-                  const isInNetLanes = (slot?.netLanes || []).some(lane => 
-                    (lane.batters && lane.batters.toLowerCase().includes(currentHuman.name.toLowerCase())) ||
-                    (lane.bowlersText && lane.bowlersText.toLowerCase().includes(currentHuman.name.toLowerCase()))
-                  );
-                  const isAssignedSquadInZones = allCustomZones.some(zone => 
-                    (zone.squadIds || []).some(sqId => currentUserAssignedSquadIds.includes(sqId))
-                  );
-                  const isPlayerRelevantToSession = playerScheduleViewMode === 'all' || isInNetLanes || isAssignedSquadInZones;
+                    const isInNetLanes = (slot?.netLanes || []).some(lane => 
+                      (lane.batters && lane.batters.toLowerCase().includes(currentHuman.name.toLowerCase())) ||
+                      (lane.bowlersText && lane.bowlersText.toLowerCase().includes(currentHuman.name.toLowerCase()))
+                    );
+                    const isAssignedSquadInZones = allCustomZones.some(zone => 
+                      (zone.squadIds || []).some(sqId => currentUserAssignedSquadIds.includes(sqId))
+                    );
+                    const isPlayerRelevantToSession = playerScheduleViewMode === 'all' || isInNetLanes || isAssignedSquadInZones;
 
-                  const showPollWidget = plan.pollEnabled !== false && playerScheduleViewMode === 'spotlight' && isPlayerRelevantToSession;
-                  const isPollClosed = plan.date < todayFormatted;
+                    const showPollWidget = plan.pollEnabled !== false && playerScheduleViewMode === 'spotlight' && isPlayerRelevantToSession;
+                    const isPollClosed = plan.date < todayFormatted;
 
-                  return (
-                    <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-bold text-base text-white">{plan.title}</h3>
-                            {playerScheduleViewMode === 'spotlight' && (
-                              <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-extrabold border border-emerald-500/20">
-                                🌟 Assigned to Your Squad
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-xs text-slate-400 mt-0.5 block">⏰ Time Slot: {slot?.time || '6:00 PM - 7:30 PM'}</span>
-                        </div>
-                        <span className="text-xs text-emerald-400 font-bold bg-emerald-500/10 px-3 py-1 rounded-xl border border-emerald-500/20">
-                          📅 Date: {plan.date}
-                        </span>
-                      </div>
-
-                      {/* SESSION ATTENDANCE POLL WIDGET */}
-                      {showPollWidget && (
-                        <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                            <div>
-                              <span className="font-extrabold text-xs text-emerald-400 block">📊 Session Attendance Poll</span>
-                              <p className="text-[11px] text-slate-400">
-                                {isPollClosed ? "🔒 Poll Closed (Session Date Passed)" : "Please confirm your availability for this training session."}
-                              </p>
+                    return (
+                      <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-base text-white">{plan.title}</h3>
+                              {playerScheduleViewMode === 'spotlight' && (
+                                <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-extrabold border border-emerald-500/20">
+                                  🌟 Assigned to Your Squad
+                                </span>
+                              )}
                             </div>
-                            <div className="flex items-center gap-2 text-[11px]">
-                              <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
-                              <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
-                              <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
-                            </div>
+                            <span className="text-xs text-slate-400 mt-0.5 block">⏰ Time Slot: {slot?.time || '6:00 PM - 7:30 PM'}</span>
                           </div>
-
-                          <div className="flex flex-wrap items-center gap-2 pt-1">
-                            <button
-                              type="button"
-                              disabled={isPollClosed}
-                              onClick={async () => {
-                                if (isPollClosed) return;
-                                if (myPollResponse) {
-                                  await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'ATTENDING', updatedAt: new Date().toISOString() });
-                                } else {
-                                  await addDoc(collection(db, 'poll_responses'), {
-                                    planId: plan.id,
-                                    clubId: activeClubId,
-                                    userId: activeUserUid,
-                                    userName: currentHuman.name,
-                                    status: 'ATTENDING',
-                                    updatedAt: new Date().toISOString()
-                                  });
-                                }
-                                triggerNotify('Attendance marked as Attending! ✓', 'success');
-                              }}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                isPollClosed 
-                                  ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                  : myPollResponse?.status === 'ATTENDING' 
-                                    ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow' 
-                                    : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                              }`}
-                            >
-                              ✓ Attending
-                            </button>
-
-                            <button
-                              type="button"
-                              disabled={isPollClosed}
-                              onClick={async () => {
-                                if (isPollClosed) return;
-                                if (myPollResponse) {
-                                  await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'DECLINED', updatedAt: new Date().toISOString() });
-                                } else {
-                                  await addDoc(collection(db, 'poll_responses'), {
-                                    planId: plan.id,
-                                    clubId: activeClubId,
-                                    userId: activeUserUid,
-                                    userName: currentHuman.name,
-                                    status: 'DECLINED',
-                                    updatedAt: new Date().toISOString()
-                                  });
-                                }
-                                triggerNotify('Attendance marked as Declined.', 'info');
-                              }}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                isPollClosed 
-                                  ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                  : myPollResponse?.status === 'DECLINED' 
-                                    ? 'bg-rose-500 text-white border-rose-400 shadow' 
-                                    : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                              }`}
-                            >
-                              ✕ Declined
-                            </button>
-
-                            <button
-                              type="button"
-                              disabled={isPollClosed}
-                              onClick={async () => {
-                                if (isPollClosed) return;
-                                if (myPollResponse) {
-                                  await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'MAYBE', updatedAt: new Date().toISOString() });
-                                } else {
-                                  await addDoc(collection(db, 'poll_responses'), {
-                                    planId: plan.id,
-                                    clubId: activeClubId,
-                                    userId: activeUserUid,
-                                    userName: currentHuman.name,
-                                    status: 'MAYBE',
-                                    updatedAt: new Date().toISOString()
-                                  });
-                                }
-                                triggerNotify('Attendance marked as Maybe.', 'info');
-                              }}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                isPollClosed 
-                                  ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                  : myPollResponse?.status === 'MAYBE' 
-                                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow' 
-                                    : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                              }`}
-                            >
-                              ? Maybe
-                            </button>
-
-                            {can('view_poll_results') && sessionPollResponses.length > 0 && (
-                              <div className="ml-auto text-[10px] text-slate-400">
-                                <span>Responses: {sessionPollResponses.map(r => `${r.userName} (${r.status})`).join(', ')}</span>
-                              </div>
-                            )}
-                          </div>
+                          <span className="text-xs text-emerald-400 font-bold bg-emerald-500/10 px-3 py-1 rounded-xl border border-emerald-500/20">
+                            📅 Date: {plan.date}
+                          </span>
                         </div>
-                      )}
 
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                        {/* ZONE 1 NET LANES: Rendered only in Full Schedule mode OR if player has assigned net lanes */}
-                        {(playerScheduleViewMode === 'all' || filteredNetLanes.length > 0) && (
-                          <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
-                            <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
-                              🏏 Zone 1: Net Lanes & Allocation
-                            </span>
-                            {filteredNetLanes.length > 0 ? (
-                              <div className="space-y-2">
-                                {filteredNetLanes.map((lane, idx) => (
-                                  <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                    <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
-                                    <div className="text-slate-400">
-                                      <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : 'Unassigned'}</strong></span>
-                                    </div>
-                                    <div className="text-slate-400">
-                                      <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
-                                    </div>
-                                  </div>
-                                ))}
+                        {showPollWidget && (
+                          <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                              <div>
+                                <span className="font-extrabold text-xs text-emerald-400 block">📊 Session Attendance Poll</span>
+                                <p className="text-[11px] text-slate-400">
+                                  {isPollClosed ? "🔒 Poll Closed (Session Date Passed)" : "Please confirm your availability for this training session."}
+                                </p>
                               </div>
-                            ) : (
-                              <span className="text-[11px] text-slate-500 italic block">No net lanes assigned to you in this session</span>
-                            )}
+                              <div className="flex items-center gap-2 text-[11px]">
+                                <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
+                                <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
+                                <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              <button
+                                type="button"
+                                disabled={isPollClosed}
+                                onClick={async () => {
+                                  if (isPollClosed) return;
+                                  if (myPollResponse) {
+                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'ATTENDING', updatedAt: new Date().toISOString() });
+                                  } else {
+                                    await addDoc(collection(db, 'poll_responses'), {
+                                      planId: plan.id,
+                                      clubId: activeClubId,
+                                      userId: activeUserUid,
+                                      userName: currentHuman.name,
+                                      status: 'ATTENDING',
+                                      updatedAt: new Date().toISOString()
+                                    });
+                                  }
+                                  triggerNotify('Attendance marked as Attending! ✓', 'success');
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                  isPollClosed 
+                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                    : myPollResponse?.status === 'ATTENDING' 
+                                      ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow' 
+                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                ✓ Attending
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={isPollClosed}
+                                onClick={async () => {
+                                  if (isPollClosed) return;
+                                  if (myPollResponse) {
+                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'DECLINED', updatedAt: new Date().toISOString() });
+                                  } else {
+                                    await addDoc(collection(db, 'poll_responses'), {
+                                      planId: plan.id,
+                                      clubId: activeClubId,
+                                      userId: activeUserUid,
+                                      userName: currentHuman.name,
+                                      status: 'DECLINED',
+                                      updatedAt: new Date().toISOString()
+                                    });
+                                  }
+                                  triggerNotify('Attendance marked as Declined.', 'info');
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                  isPollClosed 
+                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                    : myPollResponse?.status === 'DECLINED' 
+                                      ? 'bg-rose-500 text-white border-rose-400 shadow' 
+                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                ✕ Declined
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={isPollClosed}
+                                onClick={async () => {
+                                  if (isPollClosed) return;
+                                  if (myPollResponse) {
+                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'MAYBE', updatedAt: new Date().toISOString() });
+                                  } else {
+                                    await addDoc(collection(db, 'poll_responses'), {
+                                      planId: plan.id,
+                                      clubId: activeClubId,
+                                      userId: activeUserUid,
+                                      userName: currentHuman.name,
+                                      status: 'MAYBE',
+                                      updatedAt: new Date().toISOString()
+                                    });
+                                  }
+                                  triggerNotify('Attendance marked as Maybe.', 'info');
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                  isPollClosed 
+                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                    : myPollResponse?.status === 'MAYBE' 
+                                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow' 
+                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                ? Maybe
+                              </button>
+
+                              {can('view_poll_results') && sessionPollResponses.length > 0 && (
+                                <div className="ml-auto text-[10px] text-slate-400">
+                                  <span>Responses: {sessionPollResponses.map(r => `${r.userName} (${r.status})`).join(', ')}</span>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
 
-                        {filteredCustomZones.map((zone, zIdx) => {
-                          const assignedSquadNames = (zone.squadIds || []).map(sqId => {
-                            const foundSq = availableSquads.find(s => s.id === sqId);
-                            return foundSq ? foundSq.name : null;
-                          }).filter(Boolean);
-
-                          return (
-                            <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
-                              <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
-                                🏟️ {zone.title || `Zone ${zIdx + 2}`}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+                          {(playerScheduleViewMode === 'all' || filteredNetLanes.length > 0) && (
+                            <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
+                              <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
+                                🏏 Zone 1: Net Lanes & Allocation
                               </span>
-                              <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                <span className="text-slate-200 font-semibold block">
-                                  {zone.activityText || 'No activity specified'}
+                              {filteredNetLanes.length > 0 ? (
+                                <div className="space-y-2">
+                                  {filteredNetLanes.map((lane, idx) => (
+                                    <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                      <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
+                                      <div className="text-slate-400">
+                                        <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : 'Unassigned'}</strong></span>
+                                      </div>
+                                      <div className="text-slate-400">
+                                        <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-500 italic block">No net lanes assigned to you in this session</span>
+                              )}
+                            </div>
+                          )}
+
+                          {filteredCustomZones.map((zone, zIdx) => {
+                            const assignedSquadNames = (zone.squadIds || []).map(sqId => {
+                              const foundSq = availableSquads.find(s => s.id === sqId);
+                              return foundSq ? foundSq.name : null;
+                            }).filter(Boolean);
+
+                            return (
+                              <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
+                                <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
+                                  🏟️ {zone.title || `Zone ${zIdx + 2}`}
                                 </span>
-                                <div className="text-slate-400 pt-1 border-t border-slate-800">
-                                  <span>Squads: <strong className="text-emerald-400">{assignedSquadNames.length > 0 ? assignedSquadNames.join(', ') : 'None Assigned'}</strong></span>
+                                <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                  <span className="text-slate-200 font-semibold block">
+                                    {zone.activityText || 'No activity specified'}
+                                  </span>
+                                  <div className="text-slate-400 pt-1 border-t border-slate-800">
+                                    <span>Squads: <strong className="text-emerald-400">{assignedSquadNames.length > 0 ? assignedSquadNames.join(', ') : 'None Assigned'}</strong></span>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
 
-                      {isPastOrToday ? (
+                        {isPastOrToday ? (
+                          <button
+                            onClick={() => {
+                              if (!isVerified) {
+                                setCompletionTarget({
+                                  planId: plan.id,
+                                  id: plan.id,
+                                  title: plan.title,
+                                  balls: 36,
+                                  rpe: 8
+                                });
+                                setActualBalls(36);
+                                setActualRPE(8);
+                              }
+                            }}
+                            disabled={isVerified}
+                            className={`w-full font-extrabold text-xs py-2.5 rounded-xl transition-all shadow ${
+                              isVerified 
+                                ? 'bg-slate-800 text-slate-500 cursor-default' 
+                                : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                            }`}
+                          >
+                            {isVerified ? '✓ Verified & Logged' : 'Complete & Verify Actual Deliveries ✓'}
+                          </button>
+                        ) : (
+                          <div className="w-full bg-slate-950 border border-slate-800 text-slate-400 text-center py-2.5 rounded-xl text-xs font-semibold">
+                            📅 Upcoming Session (Verification unlocks on session date)
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* CLUB SESSIONS PAGINATION CONTROLS */}
+                  {publishedZonePlans.length > ITEMS_PER_PAGE && (
+                    <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs">
+                      <span className="text-slate-400 font-semibold">
+                        Showing page {clubSessionsPage} of {Math.ceil(publishedZonePlans.length / ITEMS_PER_PAGE)}
+                      </span>
+                      <div className="flex items-center gap-2">
                         <button
-                          onClick={() => {
-                            if (!isVerified) {
-                              setCompletionTarget({
-                                planId: plan.id,
-                                id: plan.id,
-                                title: plan.title,
-                                balls: 36,
-                                rpe: 8
-                              });
-                              setActualBalls(36);
-                              setActualRPE(8);
-                            }
-                          }}
-                          disabled={isVerified}
-                          className={`w-full font-extrabold text-xs py-2.5 rounded-xl transition-all shadow ${
-                            isVerified 
-                              ? 'bg-slate-800 text-slate-500 cursor-default' 
-                              : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                          onClick={() => setClubSessionsPage(p => Math.max(1, p - 1))}
+                          disabled={clubSessionsPage === 1}
+                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                            clubSessionsPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
                           }`}
                         >
-                          {isVerified ? '✓ Verified & Logged' : 'Complete & Verify Actual Deliveries ✓'}
+                          ← Previous
                         </button>
-                      ) : (
-                        <div className="w-full bg-slate-950 border border-slate-800 text-slate-400 text-center py-2.5 rounded-xl text-xs font-semibold">
-                          📅 Upcoming Session (Verification unlocks on session date)
-                        </div>
-                      )}
+                        <button
+                          onClick={() => setClubSessionsPage(p => (p * ITEMS_PER_PAGE < publishedZonePlans.length ? p + 1 : p))}
+                          disabled={clubSessionsPage * ITEMS_PER_PAGE >= publishedZonePlans.length}
+                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                            clubSessionsPage * ITEMS_PER_PAGE >= publishedZonePlans.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          Next →
+                        </button>
+                      </div>
                     </div>
-                  );
-                })
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -1839,7 +1950,7 @@ export default function App() {
                   const availableSquads = currentClub.squads || [];
                   const customZonesList = slot?.customZones || [
                     { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
-                    { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'High-Ball & Boundary Relay Catching', squadIds: [] }
+                    { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'Fielding Drills', squadIds: [] }
                   ];
 
                   const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
@@ -1920,7 +2031,6 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* COACH POLL RESULTS SUMMARY PANEL */}
                       {plan.pollEnabled !== false && can('view_poll_results') && (
                         <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
                           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-2">
@@ -2421,7 +2531,7 @@ export default function App() {
               <h3 className="font-extrabold text-base text-white flex items-center gap-2">
                 {activeTab === 'allocator' 
                   ? "🏏 Create / Edit Multi-Zone Training Night Plan" 
-                  : "👤 Plan Private / Independent Session"}
+                  : "👤 Plan Personal Session"}
               </h3>
               <button onClick={() => setShowCreatePlanModal(false)} className="text-slate-400 hover:text-white font-bold text-xs">
                 ✕ Close
@@ -2479,7 +2589,6 @@ export default function App() {
                         Enable Attendance Poll for this Session
                       </label>
 
-                      {/* COACH VISIBILITY TOGGLE (Enabled only for sessions on or after today) */}
                       <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold ${newPlanDate < todayFormatted ? 'opacity-50 cursor-not-allowed' : 'text-emerald-400'}`}>
                         <input
                           type="checkbox"
@@ -2744,7 +2853,7 @@ export default function App() {
                 type="submit"
                 className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3 rounded-xl transition-all shadow mt-2"
               >
-                Save Session Plan to Cloud ✓
+                Save session plan
               </button>
             </form>
 
@@ -2834,7 +2943,7 @@ export default function App() {
             <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs">
               <button
                 type="button"
-                onClick={() => setOnboardingTab('CREATE')}
+                onClick={() => { setOnboardingTab('CREATE'); setOnboardingError(''); }}
                 className={`py-2 rounded-lg font-bold transition-all ${
                   onboardingTab === 'CREATE' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
                 }`}
@@ -2843,7 +2952,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setOnboardingTab('JOIN')}
+                onClick={() => { setOnboardingTab('JOIN'); setOnboardingError(''); }}
                 className={`py-2 rounded-lg font-bold transition-all ${
                   onboardingTab === 'JOIN' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
                 }`}
@@ -2886,17 +2995,23 @@ export default function App() {
                   type="submit"
                   className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3 rounded-xl transition-all shadow mt-2"
                 >
-                  Create Club & Sync to Cloud ✓
+                  Create club
                 </button>
               </form>
             ) : (
               <form onSubmit={handleJoinClub} className="space-y-3 pt-1">
+                {onboardingError && (
+                  <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-3 rounded-xl text-xs font-bold text-center">
+                    ⚠️ {onboardingError}
+                  </div>
+                )}
+
                 <div>
                   <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Enter Club Invite Code</label>
                   <input
                     type="text"
                     value={joinClubCode}
-                    onChange={(e) => setJoinClubCode(e.target.value)}
+                    onChange={(e) => { setJoinClubCode(e.target.value); setOnboardingError(''); }}
                     placeholder="e.g. MCC or ODCC"
                     required
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white font-mono uppercase font-bold text-center tracking-widest text-emerald-400 text-sm"
@@ -2911,7 +3026,7 @@ export default function App() {
                   type="submit"
                   className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3 rounded-xl transition-all shadow mt-2"
                 >
-                  Join Club Workspace ✓
+                  Join club
                 </button>
               </form>
             )}
