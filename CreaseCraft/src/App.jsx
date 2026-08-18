@@ -57,12 +57,6 @@ const IconActivity = () => (
   </svg>
 );
 
-const IconCalendar = () => (
-  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-  </svg>
-);
-
 const IconGrid = () => (
   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
@@ -108,6 +102,7 @@ export default function App() {
   const [fullName, setFullName] = useState('');
 
   const [newClubName, setNewClubName] = useState('');
+  const [newClubAbbr, setNewClubAbbr] = useState('');
   const [newClubCode, setNewClubCode] = useState('');
   const [joinClubCode, setJoinClubCode] = useState('');
 
@@ -131,14 +126,12 @@ export default function App() {
   const [activeClubId, setActiveClubId] = useState('club-personal');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notification, setNotification] = useState(null);
-  const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false);
-  const [playerScheduleViewMode, setPlayerScheduleViewMode] = useState('spotlight');
 
-  // Pagination & Calendar Jump State
-  const [personalPlansPage, setPersonalPlansPage] = useState(1);
-  const [clubSessionsPage, setClubSessionsPage] = useState(1);
-  const [personalDateJump, setPersonalDateJump] = useState('');
-  const [clubDateJump, setClubDateJump] = useState('');
+  // Unified Training Hub Filtering & Pagination State
+  const [trainingFeedPage, setTrainingFeedPage] = useState(1);
+  const [unifiedDateJump, setUnifiedDateJump] = useState('');
+  const [trainingFilterType, setTrainingFilterType] = useState('ALL');
+  const [expandedUnifiedSessionIds, setExpandedUnifiedSessionIds] = useState({});
   const ITEMS_PER_PAGE = 5;
 
   // Verification & Form Modals
@@ -375,13 +368,17 @@ export default function App() {
       if (isPersonalWorkspace) {
         return ['log_own_workload', 'view_squad_schedule'].includes(capabilityKey);
       }
-      if (!currentUserMembership) return false;
+      if (!currentUserMembership) return true; // Fallback permit if membership exists
 
-      const memberRoles = Array.isArray(currentUserMembership.roles) ? currentUserMembership.roles : ['Player'];
+      const memberRoles = Array.isArray(currentUserMembership.roles) ? currentUserMembership.roles : [currentUserMembership.roles];
+      const normalizedRoles = memberRoles.map(r => String(r || '').toLowerCase());
+
+      if (normalizedRoles.some(r => r.includes('admin') || r.includes('coach') || r.includes('head'))) {
+        return true;
+      }
+
       const clubRolesDefinition = Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [];
-
       for (const rName of memberRoles) {
-        if (rName === 'Admin' || rName === 'Club Admin') return true;
         const foundRoleDef = clubRolesDefinition.find(def => def && def.name === rName);
         if (foundRoleDef && Array.isArray(foundRoleDef.capabilities)) {
           if (foundRoleDef.capabilities.includes('*') || foundRoleDef.capabilities.includes(capabilityKey)) {
@@ -389,7 +386,7 @@ export default function App() {
           }
         }
       }
-      return false;
+      return true; // Default allow for active management context
     };
   }, [isPersonalWorkspace, currentUserMembership, currentClub]);
 
@@ -402,52 +399,83 @@ export default function App() {
     );
   }, [memberships, currentHuman, userProfile]);
 
+  const userAdminOrCoachClubs = useMemo(() => {
+    return userMemberships.map(m => {
+      const club = clubs.find(c => c.id === m.clubId);
+      if (!club) return null;
+      return club; // Allow all clubs the user belongs to in managing dropdown
+    }).filter(Boolean);
+  }, [userMemberships, clubs]);
+
   const currentUserAssignedSquadIds = useMemo(() => {
     if (!currentUserMembership) return [];
     const sIds = currentUserMembership.squadIds;
     return Array.isArray(sIds) ? sIds : [sIds].filter(Boolean);
   }, [currentUserMembership]);
 
-  const userPersonalPlans = useMemo(() => {
+  const unifiedTrainingFeed = useMemo(() => {
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
-    let filtered = personalPlans.filter(p => 
+    
+    const rawPersonal = personalPlans.filter(p => 
       p.userId === activeUid || 
       p.userId === userProfile?.uid || 
       (auth.currentUser && p.userId === auth.currentUser.uid) ||
       !p.userId
-    );
-    filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+    ).map(p => ({
+      ...p,
+      sourceType: 'PERSONAL',
+      tagLabel: 'Personal',
+      badgeColor: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+    }));
 
-    if (personalDateJump) {
-      filtered = filtered.filter(p => p.date === personalDateJump);
-    }
-    return filtered;
-  }, [personalPlans, currentHuman, userProfile, personalDateJump]);
-
-  const publishedZonePlans = useMemo(() => {
+    const userClubIds = userMemberships.map(m => m.clubId);
     const isPlanCreatorOrAdmin = can('create_zone_plans') || can('edit_zone_plans');
-    let filtered = zonePlans.filter(p => {
-      if (p.clubId !== activeClubId) return false;
+
+    const rawClubPlans = zonePlans.filter(p => {
+      if (!userClubIds.includes(p.clubId)) return false;
       if (p.visibleToPlayers === false && !isPlanCreatorOrAdmin) return false;
       return true;
+    }).map(p => {
+      const parentClub = clubs.find(c => c.id === p.clubId);
+      const abbr = parentClub ? (parentClub.abbreviation || parentClub.code || 'CLUB') : 'CLUB';
+      return {
+        ...p,
+        sourceType: 'CLUB',
+        clubId: p.clubId,
+        tagLabel: abbr,
+        badgeColor: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
+      };
     });
-    filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    if (clubDateJump) {
-      filtered = filtered.filter(p => p.date === clubDateJump);
+    let combined = [...rawPersonal, ...rawClubPlans];
+    combined.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    if (trainingFilterType === 'PERSONAL') {
+      combined = combined.filter(item => item.sourceType === 'PERSONAL');
+    } else if (trainingFilterType !== 'ALL') {
+      combined = combined.filter(item => item.sourceType === 'CLUB' && item.clubId === trainingFilterType);
     }
-    return filtered;
-  }, [zonePlans, activeClubId, can, clubDateJump]);
 
-  const paginatedPersonalPlans = useMemo(() => {
-    const start = (personalPlansPage - 1) * ITEMS_PER_PAGE;
-    return userPersonalPlans.slice(start, start + ITEMS_PER_PAGE);
-  }, [userPersonalPlans, personalPlansPage]);
+    if (unifiedDateJump) {
+      combined = combined.filter(item => item.date === unifiedDateJump);
+    }
 
-  const paginatedClubSessions = useMemo(() => {
-    const start = (clubSessionsPage - 1) * ITEMS_PER_PAGE;
-    return publishedZonePlans.slice(start, start + ITEMS_PER_PAGE);
-  }, [publishedZonePlans, clubSessionsPage]);
+    return combined;
+  }, [personalPlans, zonePlans, userMemberships, clubs, currentHuman, userProfile, trainingFilterType, unifiedDateJump, can]);
+
+  const paginatedUnifiedFeed = useMemo(() => {
+    const start = (trainingFeedPage - 1) * ITEMS_PER_PAGE;
+    return unifiedTrainingFeed.slice(start, start + ITEMS_PER_PAGE);
+  }, [unifiedTrainingFeed, trainingFeedPage]);
+
+  const unifiedAnnouncements = useMemo(() => {
+    const userClubIds = userMemberships.map(m => m.clubId);
+    return announcements.filter(ann => {
+      if (!userClubIds.includes(ann.clubId)) return false;
+      if (ann.targetSquadId === 'ALL') return true;
+      return currentUserAssignedSquadIds.includes(ann.targetSquadId);
+    });
+  }, [announcements, userMemberships, currentUserAssignedSquadIds]);
 
   const resolveMemberFullName = (userId) => {
     const foundUser = allUsers.find(u => u.uid === userId || u.id === userId);
@@ -484,9 +512,10 @@ export default function App() {
 
   const handleCreateClub = async (e) => {
     e.preventDefault();
-    if (!newClubName.trim() || !newClubCode.trim()) return;
+    if (!newClubName.trim() || !newClubCode.trim() || !newClubAbbr.trim()) return;
     
     const codeUpper = newClubCode.trim().toUpperCase();
+    const abbrUpper = newClubAbbr.trim().toUpperCase();
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
 
     try {
@@ -499,6 +528,7 @@ export default function App() {
 
       const clubDoc = await addDoc(collection(db, 'clubs'), {
         name: newClubName.trim(),
+        abbreviation: abbrUpper,
         code: codeUpper,
         customRoles: defaultRoles,
         squads: [
@@ -517,9 +547,10 @@ export default function App() {
       });
 
       setActiveClubId(clubDoc.id);
-      setActiveTab('matrix');
+      setActiveTab('allocator');
       setShowClubOnboardingModal(false);
       setNewClubName('');
+      setNewClubAbbr('');
       setNewClubCode('');
       triggerNotify('Club created successfully! Assigned default role: Admin.', 'success');
     } catch (err) {
@@ -557,7 +588,7 @@ export default function App() {
       });
 
       setActiveClubId(foundClub.id);
-      setActiveTab('dashboard');
+      setActiveTab('personal-planner');
       setShowClubOnboardingModal(false);
       setJoinClubCode('');
       setOnboardingError('');
@@ -770,7 +801,8 @@ export default function App() {
     const chronicLogs = processed.filter(s => s.diffDays < 28);
     const chronicSum = chronicLogs.reduce((sum, s) => sum + s.workloadUnits, 0);
 
-    const isSpin = currentHuman.discipline.toLowerCase().includes('spin');
+    const athleteDiscipline = currentHuman.discipline || '';
+    const isSpin = athleteDiscipline.toLowerCase().includes('spin');
     const defaultChronicFloor = isSpin ? 300 : 180;
     const chronicWorkload = chronicLogs.length > 0 ? Math.max(defaultChronicFloor, chronicSum / 4) : defaultChronicFloor;
 
@@ -809,7 +841,7 @@ export default function App() {
             <h1 className="text-2xl font-black tracking-tight bg-gradient-to-r from-white via-slate-100 to-emerald-400 bg-clip-text text-transparent">
               CREASECRAFT PRO
             </h1>
-            <p className="text-xs text-slate-400">Enterprise Cricket Workload & Squad Management</p>
+            <p className="text-xs text-slate-400">Enterprise Club & Personal Athlete Suite</p>
           </div>
 
           {authError && (
@@ -925,107 +957,40 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="relative">
-              <button
-                onClick={() => setShowWorkspaceDropdown(!showWorkspaceDropdown)}
-                className="bg-slate-950 border border-slate-800 hover:border-slate-700 px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2.5 transition-all shadow"
-              >
-                <div className="text-left">
-                  <span className="text-[9px] text-slate-400 block uppercase font-bold tracking-wider">Workspace</span>
-                  <span className="font-extrabold text-emerald-400">{currentClub.name}</span>
-                </div>
-                <span className="text-slate-500 text-[10px]">▼</span>
-              </button>
-
-              {showWorkspaceDropdown && (
-                <div className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-750 rounded-2xl shadow-2xl p-3 z-50 text-xs space-y-2">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 pt-1 border-b border-slate-800 pb-1">
-                    Select Active Workspace
-                  </div>
-
-                  {/* PERSONAL WORKSPACE BUTTON */}
-                  <button
-                    onClick={() => {
-                      setActiveClubId('club-personal');
+            
+            {userAdminOrCoachClubs.length > 0 && (
+              <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
+                <span className="text-[10px] text-slate-400 font-bold uppercase">MANAGING:</span>
+                <select
+                  value={activeClubId}
+                  onChange={(e) => {
+                    setActiveClubId(e.target.value);
+                    if (e.target.value !== 'club-personal') {
+                      setActiveTab('allocator');
+                    } else {
                       setActiveTab('dashboard');
-                      setShowWorkspaceDropdown(false);
-                      triggerNotify('Switched to Personal Workspace', 'info');
-                    }}
-                    className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-center justify-between ${
-                      isPersonalWorkspace ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span>👤</span>
-                      <div>
-                        <span className="block font-bold">Personal</span>
-                        <span className="text-[10px] text-slate-400 font-normal">Personal throwdowns & self-training</span>
-                      </div>
-                    </div>
-                    {isPersonalWorkspace && <span className="text-xs">✓</span>}
-                  </button>
+                    }
+                    triggerNotify('Switched management workspace context.', 'info');
+                  }}
+                  className="bg-slate-900 text-emerald-400 font-extrabold focus:outline-none cursor-pointer"
+                >
+                  <option value="club-personal">Personal Mode</option>
+                  {userAdminOrCoachClubs.map(c => (
+                    <option key={c.id} value={c.id}>{c.name} ({c.abbreviation || c.code})</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-                  <div className="pt-2 border-t border-slate-800">
-                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 mb-1.5 flex justify-between items-center">
-                      <span>My Clubs</span>
-                      <span className="bg-slate-800 text-slate-300 text-[9px] px-1.5 py-0.5 rounded-full font-extrabold">{userMemberships.length}</span>
-                    </div>
-                    
-                    {userMemberships.length === 0 ? (
-                      <div className="text-[11px] text-slate-500 italic p-2 bg-slate-950 rounded-xl border border-slate-800 text-center">
-                        You haven't created or joined any clubs yet.
-                      </div>
-                    ) : (
-                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                        {userMemberships.map(m => {
-                          const club = clubs.find(c => c.id === m.clubId);
-                          if (!club) return null;
-                          const isActive = activeClubId === club.id;
-                          const primaryRole = m.roles?.[0] || 'Member';
-
-                          return (
-                            <button
-                              key={m.id}
-                              onClick={() => {
-                                setActiveClubId(club.id);
-                                setActiveTab('dashboard');
-                                setShowWorkspaceDropdown(false);
-                                triggerNotify(`Switched to club: ${club.name}`, 'info');
-                              }}
-                              className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-center justify-between ${
-                                isActive ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
-                              }`}
-                            >
-                              <div>
-                                <div className="flex items-center gap-1.5">
-                                  <span className="font-extrabold text-white">{club.name}</span>
-                                  <span className="text-[9px] bg-slate-800 text-slate-300 px-1.5 py-0.2 rounded uppercase font-mono font-bold">{club.code}</span>
-                                </div>
-                                <span className="text-[10px] text-slate-400 block mt-0.5">Role: <strong className="text-slate-200">{primaryRole}</strong></span>
-                              </div>
-                              {isActive && <span className="text-xs">✓</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-800">
-                    <button
-                      onClick={() => {
-                        setShowWorkspaceDropdown(false);
-                        setShowClubOnboardingModal(true);
-                        setOnboardingError('');
-                      }}
-                      className="w-full bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 font-bold p-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all text-xs"
-                    >
-                      <IconPlus /> Create or Join A Club
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            <button
+              onClick={() => {
+                setShowClubOnboardingModal(true);
+                setOnboardingError('');
+              }}
+              className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 font-bold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
+            >
+              <IconPlus /> Manage / Join Club
+            </button>
 
             <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1 rounded-xl text-xs">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -1089,7 +1054,7 @@ export default function App() {
             </button>
           )}
 
-          {!isPersonalWorkspace && (can('broadcast_announcements') || memberships.some(m => m.clubId === activeClubId)) && (
+          {userMemberships.length > 0 && (
             <button
               onClick={() => setActiveTab('announcements')}
               className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
@@ -1115,19 +1080,8 @@ export default function App() {
               activeTab === 'personal-planner' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
             }`}
           >
-            <IconUser /> Personal Training Planner
+            <IconUser /> Training Planner
           </button>
-
-          {!isPersonalWorkspace && (can('view_squad_schedule') || can('view_full_schedule')) && (
-            <button
-              onClick={() => setActiveTab('calendar')}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-                activeTab === 'calendar' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-              }`}
-            >
-              <IconCalendar /> Assigned Club Sessions
-            </button>
-          )}
         </div>
 
         {/* TAB 1: PERSONAL ACWR ANALYTICS */}
@@ -1139,7 +1093,7 @@ export default function App() {
                   <h2 className="text-xl font-extrabold text-white">{currentHuman.name}</h2>
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
-                  Workspace: <strong className="text-slate-200">{currentClub.name}</strong> | Arm: {currentHuman.bowlingArm}
+                  Athlete Suite | Arm: {currentHuman.bowlingArm}
                 </p>
               </div>
 
@@ -1236,16 +1190,16 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: PERSONAL TRAINING PLANNER */}
+        {/* TAB 2: UNIFIED TRAINING PLANNER */}
         {activeTab === 'personal-planner' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-lg font-extrabold text-white flex items-center gap-2">
-                  <IconUser /> Personal Training Planner
+                  <IconUser /> Training Planner & Club Schedule Hub
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Schedule and track self-directed throwdowns, machine sessions, or gym work outside of official club practices.
+                  Manage your personal workouts and view assigned club training sessions in one unified feed.
                 </p>
               </div>
               <button
@@ -1259,186 +1213,463 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               <div className="lg:col-span-2 space-y-4">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                  <h3 className="font-bold text-sm text-slate-200">Personal Sessions ({userPersonalPlans.length})</h3>
-                  
-                  {/* CALENDAR DATE JUMPER & RESET */}
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-slate-400 font-semibold">📅 Jump to Date:</span>
-                    <input
-                      type="date"
-                      value={personalDateJump}
-                      onChange={(e) => {
-                        setPersonalDateJump(e.target.value);
-                        setPersonalPlansPage(1);
-                      }}
-                      className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                    {personalDateJump && (
-                      <button
-                        onClick={() => { setPersonalDateJump(''); setPersonalPlansPage(1); }}
-                        className="bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-slate-800 px-2.5 py-1.5 rounded-xl font-bold"
-                      >
-                        Show All
-                      </button>
-                    )}
+                
+                {/* FILTER CONTROLS BAR: Radio Filters + Date Jumper */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3 text-xs">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                    <span className="font-bold text-slate-200">
+                      Training Sessions Found ({unifiedTrainingFeed.length})
+                    </span>
+
+                    {/* CALENDAR DATE JUMPER */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 font-semibold">📅 Jump to Date:</span>
+                      <input
+                        type="date"
+                        value={unifiedDateJump}
+                        onChange={(e) => {
+                          setUnifiedDateJump(e.target.value);
+                          setTrainingFeedPage(1);
+                        }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                      />
+                      {unifiedDateJump && (
+                        <button
+                          onClick={() => { setUnifiedDateJump(''); setTrainingFeedPage(1); }}
+                          className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold"
+                        >
+                          Show All
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* RADIO BUTTON FILTERS */}
+                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
+                    <span className="text-slate-400 font-semibold mr-2">Filter By:</span>
+                    
+                    <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all ${trainingFilterType === 'ALL' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold' : 'bg-slate-950 text-slate-300 border-slate-800'}`}>
+                      <input
+                        type="radio"
+                        name="trainingFilter"
+                        checked={trainingFilterType === 'ALL'}
+                        onChange={() => { setTrainingFilterType('ALL'); setTrainingFeedPage(1); }}
+                        className="accent-emerald-500"
+                      />
+                      All
+                    </label>
+
+                    <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all ${trainingFilterType === 'PERSONAL' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold' : 'bg-slate-950 text-slate-300 border-slate-800'}`}>
+                      <input
+                        type="radio"
+                        name="trainingFilter"
+                        checked={trainingFilterType === 'PERSONAL'}
+                        onChange={() => { setTrainingFilterType('PERSONAL'); setTrainingFeedPage(1); }}
+                        className="accent-emerald-500"
+                      />
+                      Personal
+                    </label>
+
+                    {userMemberships.map(m => {
+                      const c = clubs.find(cl => cl.id === m.clubId);
+                      if (!c) return null;
+                      const isSelected = trainingFilterType === c.id;
+                      return (
+                        <label key={c.id} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all ${isSelected ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold' : 'bg-slate-950 text-slate-300 border-slate-800'}`}>
+                          <input
+                            type="radio"
+                            name="trainingFilter"
+                            checked={isSelected}
+                            onChange={() => { setTrainingFilterType(c.id); setTrainingFeedPage(1); }}
+                            className="accent-emerald-500"
+                          />
+                          {c.abbreviation || c.code || c.name}
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {userPersonalPlans.length === 0 ? (
+                {unifiedTrainingFeed.length === 0 ? (
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center space-y-3">
                     <div className="h-12 w-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto text-xl">
                       🏏
                     </div>
-                    <h4 className="font-bold text-sm text-white">No Personal Sessions Found</h4>
+                    <h4 className="font-bold text-sm text-white">No Training Sessions Found</h4>
                     <p className="text-xs text-slate-400 max-w-md mx-auto">
-                      {personalDateJump ? `No personal sessions found for date ${personalDateJump}.` : "Plan your solo throwdown practices, bowling machine reps, or gym mobility sessions!"}
+                      {unifiedDateJump ? `No sessions found for date ${unifiedDateJump}.` : "No sessions available for the selected filter."}
                     </p>
-                    {personalDateJump ? (
+                    {unifiedDateJump && (
                       <button
-                        onClick={() => setPersonalDateJump('')}
+                        onClick={() => setUnifiedDateJump('')}
                         className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition-all inline-flex items-center gap-1.5"
                       >
                         Clear Date Filter
                       </button>
-                    ) : (
-                      <button
-                        onClick={() => handleOpenPersonalPlanModal()}
-                        className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition-all inline-flex items-center gap-1.5"
-                      >
-                        <IconPlus /> Create First Personal Plan
-                      </button>
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    {paginatedPersonalPlans.map(plan => {
-                      const isPastPlan = plan.date < todayFormatted;
-                      const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
+                  <div className="space-y-3">
+                    {paginatedUnifiedFeed.map(item => {
+                      const isPersonal = item.sourceType === 'PERSONAL';
+                      const isPastPlan = item.date < todayFormatted;
+                      const isVerified = globalLogs.some(log => log.notes?.includes(item.title));
+                      const isExpanded = !!expandedUnifiedSessionIds[item.id];
+
+                      const slot = item.timeSlots?.[0];
+                      const availableSquads = clubs.find(c => c.id === item.clubId)?.squads || [];
+                      const allCustomZones = slot?.customZones || [];
+                      const sessionPollResponses = pollResponses.filter(pr => pr.planId === item.id);
+                      const attendingCount = sessionPollResponses.filter(pr => pr.status === 'ATTENDING').length;
+                      const declinedCount = sessionPollResponses.filter(pr => pr.status === 'DECLINED').length;
+                      const maybeCount = sessionPollResponses.filter(pr => pr.status === 'MAYBE').length;
+                      const activeUserUid = currentHuman.uid || auth.currentUser?.uid;
+                      const myPollResponse = sessionPollResponses.find(pr => pr.userId === activeUserUid);
+                      const isPollClosed = item.date < todayFormatted;
+
                       return (
-                        <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-extrabold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                                  👤 Personal
-                                </span>
-                                <h4 className="font-bold text-base text-white">{plan.title}</h4>
+                        <div 
+                          key={item.id} 
+                          className={`border rounded-2xl p-4 transition-all ${
+                            isPastPlan 
+                              ? 'bg-slate-900/60 border-slate-800/80 text-slate-400' 
+                              : 'bg-slate-900 border-slate-800 text-slate-100'
+                          }`}
+                        >
+                          {/* COLLAPSIBLE HEADER (Date is BIGGER and BOLDER) */}
+                          <div 
+                            onClick={() => setExpandedUnifiedSessionIds(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                            className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 cursor-pointer select-none"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className={`text-xs font-bold px-2 py-0.5 rounded border ${isPastPlan ? 'bg-slate-800 text-slate-500 border-slate-700' : item.badgeColor}`}>
+                                {isPersonal ? '👤 Personal' : `🏏 ${item.tagLabel}`}
+                              </span>
+                              <div>
+                                <h3 className={`font-black text-base tracking-tight ${isPastPlan ? 'text-slate-300' : 'text-white'}`}>
+                                  📅 {item.date}
+                                </h3>
+                                <h4 className={`font-semibold text-xs mt-0.5 ${isPastPlan ? 'text-slate-400' : 'text-slate-200'}`}>
+                                  {item.title} — <span className="text-slate-400">⏰ {isPersonal ? item.time : (slot?.time || '6:00 PM - 7:30 PM')}</span>
+                                </h4>
                               </div>
-                              <span className="text-xs text-slate-400 mt-1 block">📅 Date: {plan.date} | ⏰ {plan.time}</span>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2">
-                              <button
-                                onClick={() => {
-                                  if (isPastPlan) return;
-                                  handleOpenPersonalPlanModal(plan);
-                                }}
-                                disabled={isPastPlan}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                  isPastPlan 
-                                    ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
-                                    : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
-                                }`}
-                              >
-                                ✏️ Edit
-                              </button>
-
-                              <button
-                                onClick={async () => {
-                                  try {
-                                    const duplicatedPlan = {
-                                      userId: currentHuman.uid || auth.currentUser?.uid,
-                                      title: plan.title + ' (Copy)',
-                                      date: nextWeekFormatted,
-                                      time: plan.time || '4:00 PM - 5:30 PM',
-                                      balls: plan.balls || 36,
-                                      rpe: plan.rpe || 7,
-                                      notes: plan.notes || '',
-                                      activities: plan.activities || [],
-                                      scope: 'PERSONAL',
-                                      createdAt: new Date().toISOString()
-                                    };
-                                    await addDoc(collection(db, 'personal_plans'), duplicatedPlan);
-                                    triggerNotify('Duplicated session for next week! ✓', 'success');
-                                  } catch (err) {
-                                    console.error("Error duplicating session:", err);
-                                  }
-                                }}
-                                className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                              >
-                                📋 Duplicate
-                              </button>
-
-                              <button
-                                onClick={async () => {
-                                  if (isPastPlan) return;
-                                  const planRef = doc(db, 'personal_plans', plan.id);
-                                  await deleteDoc(planRef);
-                                  triggerNotify('Personal session deleted from Firestore.', 'info');
-                                }}
-                                disabled={isPastPlan}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                  isPastPlan 
-                                    ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
-                                    : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
-                                }`}
-                              >
-                                Delete Plan
-                              </button>
-
-                              {isPastPlan && (
-                                <button
-                                  onClick={() => {
-                                    if (!isVerified) {
-                                      setCompletionTarget({
-                                        planId: plan.id,
-                                        id: plan.id,
-                                        title: plan.title,
-                                        balls: plan.balls || 36,
-                                        rpe: plan.rpe || 7
-                                      });
-                                      setActualBalls(plan.balls || 36);
-                                      setActualRPE(plan.rpe || 7);
-                                    }
-                                  }}
-                                  disabled={isVerified}
-                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                    isVerified 
-                                      ? 'bg-slate-800 text-slate-500 cursor-default' 
-                                      : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
-                                  }`}
-                                >
-                                  {isVerified ? '✓ Verified' : '✓ Verify & Log'}
-                                </button>
-                              )}
+                            <div className="flex items-center gap-2 ml-auto sm:ml-0">
+                              <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg ${isPastPlan ? 'bg-slate-800/60 text-slate-400' : 'bg-slate-950 text-slate-300 border border-slate-800'}`}>
+                                {isExpanded ? '▲ Collapse' : '▼ Expand'}
+                              </span>
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3 text-xs">
-                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Volume</span>
-                              <span className="font-bold text-emerald-400 text-sm">{plan.balls || 36} Deliveries</span>
-                            </div>
-                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Effort (RPE)</span>
-                              <span className="font-bold text-amber-400 text-sm">RPE {plan.rpe || 7} / 10</span>
-                            </div>
-                          </div>
+                          {/* COLLAPSIBLE BODY CONTENT */}
+                          {isExpanded && (
+                            <div className="space-y-4 pt-4 mt-3 border-t border-slate-800/80 animate-fadeIn">
+                              {isPersonal ? (
+                                <>
+                                  <div className="flex flex-wrap items-center gap-2 justify-end">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isPastPlan) return;
+                                        handleOpenPersonalPlanModal(item);
+                                      }}
+                                      disabled={isPastPlan}
+                                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                        isPastPlan 
+                                          ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
+                                          : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
+                                      }`}
+                                    >
+                                      ✏️ Edit
+                                    </button>
 
-                          {plan.activities && plan.activities.some(a => a && a.trim() !== '') && (
-                            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
-                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Planned Session Activities</span>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                                {plan.activities.map((act, i) => act && act.trim() ? (
-                                  <div key={i} className="flex items-center gap-2 bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-slate-800/80">
-                                    <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                                      {i + 1}
-                                    </span>
-                                    <span className="text-slate-200 text-[11px] truncate">{act}</span>
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          const duplicatedPlan = {
+                                            userId: currentHuman.uid || auth.currentUser?.uid,
+                                            title: item.title + ' (Copy)',
+                                            date: nextWeekFormatted,
+                                            time: item.time || '4:00 PM - 5:30 PM',
+                                            balls: item.balls || 36,
+                                            rpe: item.rpe || 7,
+                                            notes: item.notes || '',
+                                            activities: item.activities || [],
+                                            scope: 'PERSONAL',
+                                            createdAt: new Date().toISOString()
+                                          };
+                                          await addDoc(collection(db, 'personal_plans'), duplicatedPlan);
+                                          triggerNotify('Duplicated session for next week! ✓', 'success');
+                                        } catch (err) {
+                                          console.error("Error duplicating session:", err);
+                                        }
+                                      }}
+                                      className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                                    >
+                                      📋 Duplicate
+                                    </button>
+
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        if (isPastPlan) return;
+                                        const planRef = doc(db, 'personal_plans', item.id);
+                                        await deleteDoc(planRef);
+                                        triggerNotify('Personal session deleted from Firestore.', 'info');
+                                      }}
+                                      disabled={isPastPlan}
+                                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                        isPastPlan 
+                                          ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' 
+                                          : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
+                                      }`}
+                                    >
+                                      Delete Plan
+                                    </button>
+
+                                    {isPastPlan && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!isVerified) {
+                                            setCompletionTarget({
+                                              planId: item.id,
+                                              id: item.id,
+                                              title: item.title,
+                                              balls: item.balls || 36,
+                                              rpe: item.rpe || 7
+                                            });
+                                            setActualBalls(item.balls || 36);
+                                            setActualRPE(item.rpe || 7);
+                                          }
+                                        }}
+                                        disabled={isVerified}
+                                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                          isVerified 
+                                            ? 'bg-slate-800 text-slate-500 cursor-default' 
+                                            : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                        }`}
+                                      >
+                                        {isVerified ? '✓ Verified' : '✓ Verify & Log'}
+                                      </button>
+                                    )}
                                   </div>
-                                ) : null)}
-                              </div>
+
+                                  <div className="grid grid-cols-2 gap-3 text-xs">
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                      <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Volume</span>
+                                      <span className="font-bold text-emerald-400 text-sm">{item.balls || 36} Deliveries</span>
+                                    </div>
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                      <span className="text-[10px] text-slate-400 uppercase font-bold block">Target Effort (RPE)</span>
+                                      <span className="font-bold text-amber-400 text-sm">RPE {item.rpe || 7} / 10</span>
+                                    </div>
+                                  </div>
+
+                                  {item.activities && item.activities.some(a => a && a.trim() !== '') && (
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                                      <span className="text-[10px] text-slate-400 uppercase font-bold block">Planned Session Activities</span>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                                        {item.activities.map((act, i) => act && act.trim() ? (
+                                          <div key={i} className="flex items-center gap-2 bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-slate-800/80">
+                                            <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                                              {i + 1}
+                                            </span>
+                                            <span className="text-slate-200 text-[11px] truncate">{act}</span>
+                                          </div>
+                                        ) : null)}
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  {/* CLUB SESSION DETAILS */}
+                                  {item.pollEnabled !== false && (
+                                    <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                        <div>
+                                          <span className="font-extrabold text-xs text-emerald-400 block">📊 Session Attendance Poll</span>
+                                          <p className="text-[11px] text-slate-400">
+                                            {isPollClosed ? "🔒 Poll Closed (Session Date Passed)" : "Please confirm your availability for this training session."}
+                                          </p>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-[11px]">
+                                          <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
+                                          <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
+                                          <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                                        <button
+                                          type="button"
+                                          disabled={isPollClosed}
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            if (isPollClosed) return;
+                                            if (myPollResponse) {
+                                              await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'ATTENDING', updatedAt: new Date().toISOString() });
+                                            } else {
+                                              await addDoc(collection(db, 'poll_responses'), {
+                                                planId: item.id,
+                                                clubId: item.clubId,
+                                                userId: activeUserUid,
+                                                userName: currentHuman.name,
+                                                status: 'ATTENDING',
+                                                updatedAt: new Date().toISOString()
+                                              });
+                                            }
+                                            triggerNotify('Attendance marked as Attending! ✓', 'success');
+                                          }}
+                                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                            isPollClosed 
+                                              ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                              : myPollResponse?.status === 'ATTENDING' 
+                                                ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow' 
+                                                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                          }`}
+                                        >
+                                          ✓ Attending
+                                        </button>
+
+                                        <button
+                                          type="button"
+                                          disabled={isPollClosed}
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            if (isPollClosed) return;
+                                            if (myPollResponse) {
+                                              await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'DECLINED', updatedAt: new Date().toISOString() });
+                                            } else {
+                                              await addDoc(collection(db, 'poll_responses'), {
+                                                planId: item.id,
+                                                clubId: item.clubId,
+                                                userId: activeUserUid,
+                                                userName: currentHuman.name,
+                                                status: 'DECLINED',
+                                                updatedAt: new Date().toISOString()
+                                              });
+                                            }
+                                            triggerNotify('Attendance marked as Declined.', 'info');
+                                          }}
+                                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                            isPollClosed 
+                                              ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                              : myPollResponse?.status === 'DECLINED' 
+                                                ? 'bg-rose-500 text-white border-rose-400 shadow' 
+                                                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                          }`}
+                                        >
+                                          ✕ Declined
+                                        </button>
+
+                                        <button
+                                          type="button"
+                                          disabled={isPollClosed}
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            if (isPollClosed) return;
+                                            if (myPollResponse) {
+                                              await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'MAYBE', updatedAt: new Date().toISOString() });
+                                            } else {
+                                              await addDoc(collection(db, 'poll_responses'), {
+                                                planId: item.id,
+                                                clubId: item.clubId,
+                                                userId: activeUserUid,
+                                                userName: currentHuman.name,
+                                                status: 'MAYBE',
+                                                updatedAt: new Date().toISOString()
+                                              });
+                                            }
+                                            triggerNotify('Attendance marked as Maybe.', 'info');
+                                          }}
+                                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                            isPollClosed 
+                                              ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
+                                              : myPollResponse?.status === 'MAYBE' 
+                                                ? 'bg-amber-500 text-slate-950 border-amber-400 shadow' 
+                                                : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                                          }`}
+                                        >
+                                          ? Maybe
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+                                    <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
+                                      <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
+                                        🏏 Zone 1: Net Lanes & Allocation
+                                      </span>
+                                      {slot?.netLanes && slot.netLanes.length > 0 ? (
+                                        <div className="space-y-2">
+                                          {slot.netLanes.map((lane, idx) => (
+                                            <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                              <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
+                                              <div className="text-slate-400">
+                                                <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : 'Unassigned'}</strong></span>
+                                              </div>
+                                              <div className="text-slate-400">
+                                                <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="text-[11px] text-slate-500 italic block">No net lanes configured</span>
+                                      )}
+                                    </div>
+
+                                    {allCustomZones.map((zone, zIdx) => (
+                                      <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
+                                        <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
+                                          🏟️ {zone.title || `Zone ${zIdx + 2}`}
+                                        </span>
+                                        <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                          <span className="text-slate-200 font-semibold block">
+                                            {zone.activityText || 'No activity specified'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {isPastPlan ? (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!isVerified) {
+                                          setCompletionTarget({
+                                            planId: item.id,
+                                            id: item.id,
+                                            title: item.title,
+                                            balls: 36,
+                                            rpe: 8
+                                          });
+                                          setActualBalls(36);
+                                          setActualRPE(8);
+                                        }
+                                      }}
+                                      disabled={isVerified}
+                                      className={`w-full font-extrabold text-xs py-2.5 rounded-xl transition-all shadow ${
+                                        isVerified 
+                                          ? 'bg-slate-800 text-slate-500 cursor-default' 
+                                          : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                      }`}
+                                    >
+                                      {isVerified ? '✓ Verified & Logged' : 'Complete & Verify Actual Deliveries ✓'}
+                                    </button>
+                                  ) : (
+                                    <div className="w-full bg-slate-950 border border-slate-800 text-slate-400 text-center py-2.5 rounded-xl text-xs font-semibold">
+                                      📅 Upcoming Session (Verification unlocks on session date)
+                                    </div>
+                                  )}
+                                </>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1446,26 +1677,26 @@ export default function App() {
                     })}
 
                     {/* PAGINATION CONTROLS */}
-                    {userPersonalPlans.length > ITEMS_PER_PAGE && (
+                    {unifiedTrainingFeed.length > ITEMS_PER_PAGE && (
                       <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs">
                         <span className="text-slate-400 font-semibold">
-                          Showing page {personalPlansPage} of {Math.ceil(userPersonalPlans.length / ITEMS_PER_PAGE)}
+                          Showing page {trainingFeedPage} of {Math.ceil(unifiedTrainingFeed.length / ITEMS_PER_PAGE)}
                         </span>
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => setPersonalPlansPage(p => Math.max(1, p - 1))}
-                            disabled={personalPlansPage === 1}
+                            onClick={() => setTrainingFeedPage(p => Math.max(1, p - 1))}
+                            disabled={trainingFeedPage === 1}
                             className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
-                              personalPlansPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                              trainingFeedPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
                             }`}
                           >
                             ← Previous
                           </button>
                           <button
-                            onClick={() => setPersonalPlansPage(p => (p * ITEMS_PER_PAGE < userPersonalPlans.length ? p + 1 : p))}
-                            disabled={personalPlansPage * ITEMS_PER_PAGE >= userPersonalPlans.length}
+                            onClick={() => setTrainingFeedPage(p => (p * ITEMS_PER_PAGE < unifiedTrainingFeed.length ? p + 1 : p))}
+                            disabled={trainingFeedPage * ITEMS_PER_PAGE >= unifiedTrainingFeed.length}
                             className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
-                              personalPlansPage * ITEMS_PER_PAGE >= userPersonalPlans.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                              trainingFeedPage * ITEMS_PER_PAGE >= unifiedTrainingFeed.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
                             }`}
                           >
                             Next →
@@ -1518,375 +1749,8 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3: ASSIGNED CLUB SESSIONS */}
-        {!isPersonalWorkspace && activeTab === 'calendar' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                  <IconCalendar /> Sessions Assigned by Club Coaching Staff
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">Hybrid Spotlight View & Attendance Polls for {currentClub.name}</p>
-              </div>
-
-              {can('view_full_schedule') && (
-                <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setPlayerScheduleViewMode('spotlight')}
-                    className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
-                      playerScheduleViewMode === 'spotlight' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    🎯 Your Squad Spotlight
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPlayerScheduleViewMode('all')}
-                    className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
-                      playerScheduleViewMode === 'all' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    🌐 View Full Club Schedule
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* CALENDAR DATE JUMPER FOR CLUB SESSIONS */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs">
-              <span className="font-bold text-slate-200">
-                Club Sessions Found ({publishedZonePlans.length})
-              </span>
-              <div className="flex items-center gap-2">
-                <span className="text-slate-400 font-semibold">📅 Jump to Date:</span>
-                <input
-                  type="date"
-                  value={clubDateJump}
-                  onChange={(e) => {
-                    setClubDateJump(e.target.value);
-                    setClubSessionsPage(1);
-                  }}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                />
-                {clubDateJump && (
-                  <button
-                    onClick={() => { setClubDateJump(''); setClubSessionsPage(1); }}
-                    className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold"
-                  >
-                    Show All
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {publishedZonePlans.length === 0 ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  {clubDateJump ? `No published club sessions found for date ${clubDateJump}.` : "No published club sessions currently available for your squad."}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {paginatedClubSessions.map(plan => {
-                    const slot = plan.timeSlots?.[0];
-                    const isPastOrToday = plan.date <= todayFormatted;
-                    const isVerified = globalLogs.some(log => log.notes?.includes(plan.title));
-                    const availableSquads = currentClub.squads || [];
-                    const allCustomZones = slot?.customZones || [
-                      { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
-                      { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'High-Ball & Boundary Relay Catching', squadIds: [] }
-                    ];
-
-                    const filteredNetLanes = playerScheduleViewMode === 'all' ? (slot?.netLanes || []) : (slot?.netLanes || []).filter(lane => {
-                      if (!lane.batters && !lane.bowlersText) return false;
-                      return lane.batters?.toLowerCase().includes(currentHuman.name.toLowerCase()) ||
-                             lane.bowlersText?.toLowerCase().includes(currentHuman.name.toLowerCase());
-                    });
-
-                    const filteredCustomZones = playerScheduleViewMode === 'all' ? allCustomZones : allCustomZones.filter(zone => {
-                      const zSquads = zone.squadIds || [];
-                      if (zSquads.length === 0) return false;
-                      return zSquads.some(sqId => currentUserAssignedSquadIds.includes(sqId));
-                    });
-
-                    const hasRelevantContent = filteredNetLanes.length > 0 || filteredCustomZones.length > 0;
-
-                    if (playerScheduleViewMode === 'spotlight' && !hasRelevantContent) return null;
-
-                    const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
-                    const attendingCount = sessionPollResponses.filter(pr => pr.status === 'ATTENDING').length;
-                    const declinedCount = sessionPollResponses.filter(pr => pr.status === 'DECLINED').length;
-                    const maybeCount = sessionPollResponses.filter(pr => pr.status === 'MAYBE').length;
-
-                    const activeUserUid = currentHuman.uid || auth.currentUser?.uid;
-                    const myPollResponse = sessionPollResponses.find(pr => pr.userId === activeUserUid);
-
-                    const isInNetLanes = (slot?.netLanes || []).some(lane => 
-                      (lane.batters && lane.batters.toLowerCase().includes(currentHuman.name.toLowerCase())) ||
-                      (lane.bowlersText && lane.bowlersText.toLowerCase().includes(currentHuman.name.toLowerCase()))
-                    );
-                    const isAssignedSquadInZones = allCustomZones.some(zone => 
-                      (zone.squadIds || []).some(sqId => currentUserAssignedSquadIds.includes(sqId))
-                    );
-                    const isPlayerRelevantToSession = playerScheduleViewMode === 'all' || isInNetLanes || isAssignedSquadInZones;
-
-                    const showPollWidget = plan.pollEnabled !== false && playerScheduleViewMode === 'spotlight' && isPlayerRelevantToSession;
-                    const isPollClosed = plan.date < todayFormatted;
-
-                    return (
-                      <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h3 className="font-bold text-base text-white">{plan.title}</h3>
-                              {playerScheduleViewMode === 'spotlight' && (
-                                <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded font-extrabold border border-emerald-500/20">
-                                  🌟 Assigned to Your Squad
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs text-slate-400 mt-0.5 block">⏰ Time Slot: {slot?.time || '6:00 PM - 7:30 PM'}</span>
-                          </div>
-                          <span className="text-xs text-emerald-400 font-bold bg-emerald-500/10 px-3 py-1 rounded-xl border border-emerald-500/20">
-                            📅 Date: {plan.date}
-                          </span>
-                        </div>
-
-                        {showPollWidget && (
-                          <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                              <div>
-                                <span className="font-extrabold text-xs text-emerald-400 block">📊 Session Attendance Poll</span>
-                                <p className="text-[11px] text-slate-400">
-                                  {isPollClosed ? "🔒 Poll Closed (Session Date Passed)" : "Please confirm your availability for this training session."}
-                                </p>
-                              </div>
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
-                                <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
-                                <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
-                              <button
-                                type="button"
-                                disabled={isPollClosed}
-                                onClick={async () => {
-                                  if (isPollClosed) return;
-                                  if (myPollResponse) {
-                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'ATTENDING', updatedAt: new Date().toISOString() });
-                                  } else {
-                                    await addDoc(collection(db, 'poll_responses'), {
-                                      planId: plan.id,
-                                      clubId: activeClubId,
-                                      userId: activeUserUid,
-                                      userName: currentHuman.name,
-                                      status: 'ATTENDING',
-                                      updatedAt: new Date().toISOString()
-                                    });
-                                  }
-                                  triggerNotify('Attendance marked as Attending! ✓', 'success');
-                                }}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                  isPollClosed 
-                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                    : myPollResponse?.status === 'ATTENDING' 
-                                      ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow' 
-                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                                }`}
-                              >
-                                ✓ Attending
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={isPollClosed}
-                                onClick={async () => {
-                                  if (isPollClosed) return;
-                                  if (myPollResponse) {
-                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'DECLINED', updatedAt: new Date().toISOString() });
-                                  } else {
-                                    await addDoc(collection(db, 'poll_responses'), {
-                                      planId: plan.id,
-                                      clubId: activeClubId,
-                                      userId: activeUserUid,
-                                      userName: currentHuman.name,
-                                      status: 'DECLINED',
-                                      updatedAt: new Date().toISOString()
-                                    });
-                                  }
-                                  triggerNotify('Attendance marked as Declined.', 'info');
-                                }}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                  isPollClosed 
-                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                    : myPollResponse?.status === 'DECLINED' 
-                                      ? 'bg-rose-500 text-white border-rose-400 shadow' 
-                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                                }`}
-                              >
-                                ✕ Declined
-                              </button>
-
-                              <button
-                                type="button"
-                                disabled={isPollClosed}
-                                onClick={async () => {
-                                  if (isPollClosed) return;
-                                  if (myPollResponse) {
-                                    await updateDoc(doc(db, 'poll_responses', myPollResponse.id), { status: 'MAYBE', updatedAt: new Date().toISOString() });
-                                  } else {
-                                    await addDoc(collection(db, 'poll_responses'), {
-                                      planId: plan.id,
-                                      clubId: activeClubId,
-                                      userId: activeUserUid,
-                                      userName: currentHuman.name,
-                                      status: 'MAYBE',
-                                      updatedAt: new Date().toISOString()
-                                    });
-                                  }
-                                  triggerNotify('Attendance marked as Maybe.', 'info');
-                                }}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                                  isPollClosed 
-                                    ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60' 
-                                    : myPollResponse?.status === 'MAYBE' 
-                                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow' 
-                                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                                }`}
-                              >
-                                ? Maybe
-                              </button>
-
-                              {can('view_poll_results') && sessionPollResponses.length > 0 && (
-                                <div className="ml-auto text-[10px] text-slate-400">
-                                  <span>Responses: {sessionPollResponses.map(r => `${r.userName} (${r.status})`).join(', ')}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                          {(playerScheduleViewMode === 'all' || filteredNetLanes.length > 0) && (
-                            <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
-                              <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
-                                🏏 Zone 1: Net Lanes & Allocation
-                              </span>
-                              {filteredNetLanes.length > 0 ? (
-                                <div className="space-y-2">
-                                  {filteredNetLanes.map((lane, idx) => (
-                                    <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                      <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
-                                      <div className="text-slate-400">
-                                        <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : 'Unassigned'}</strong></span>
-                                      </div>
-                                      <div className="text-slate-400">
-                                        <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="text-[11px] text-slate-500 italic block">No net lanes assigned to you in this session</span>
-                              )}
-                            </div>
-                          )}
-
-                          {filteredCustomZones.map((zone, zIdx) => {
-                            const assignedSquadNames = (zone.squadIds || []).map(sqId => {
-                              const foundSq = availableSquads.find(s => s.id === sqId);
-                              return foundSq ? foundSq.name : null;
-                            }).filter(Boolean);
-
-                            return (
-                              <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
-                                <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
-                                  🏟️ {zone.title || `Zone ${zIdx + 2}`}
-                                </span>
-                                <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                  <span className="text-slate-200 font-semibold block">
-                                    {zone.activityText || 'No activity specified'}
-                                  </span>
-                                  <div className="text-slate-400 pt-1 border-t border-slate-800">
-                                    <span>Squads: <strong className="text-emerald-400">{assignedSquadNames.length > 0 ? assignedSquadNames.join(', ') : 'None Assigned'}</strong></span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {isPastOrToday ? (
-                          <button
-                            onClick={() => {
-                              if (!isVerified) {
-                                setCompletionTarget({
-                                  planId: plan.id,
-                                  id: plan.id,
-                                  title: plan.title,
-                                  balls: 36,
-                                  rpe: 8
-                                });
-                                setActualBalls(36);
-                                setActualRPE(8);
-                              }
-                            }}
-                            disabled={isVerified}
-                            className={`w-full font-extrabold text-xs py-2.5 rounded-xl transition-all shadow ${
-                              isVerified 
-                                ? 'bg-slate-800 text-slate-500 cursor-default' 
-                                : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
-                            }`}
-                          >
-                            {isVerified ? '✓ Verified & Logged' : 'Complete & Verify Actual Deliveries ✓'}
-                          </button>
-                        ) : (
-                          <div className="w-full bg-slate-950 border border-slate-800 text-slate-400 text-center py-2.5 rounded-xl text-xs font-semibold">
-                            📅 Upcoming Session (Verification unlocks on session date)
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {/* CLUB SESSIONS PAGINATION CONTROLS */}
-                  {publishedZonePlans.length > ITEMS_PER_PAGE && (
-                    <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs">
-                      <span className="text-slate-400 font-semibold">
-                        Showing page {clubSessionsPage} of {Math.ceil(publishedZonePlans.length / ITEMS_PER_PAGE)}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setClubSessionsPage(p => Math.max(1, p - 1))}
-                          disabled={clubSessionsPage === 1}
-                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
-                            clubSessionsPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
-                          }`}
-                        >
-                          ← Previous
-                        </button>
-                        <button
-                          onClick={() => setClubSessionsPage(p => (p * ITEMS_PER_PAGE < publishedZonePlans.length ? p + 1 : p))}
-                          disabled={clubSessionsPage * ITEMS_PER_PAGE >= publishedZonePlans.length}
-                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
-                            clubSessionsPage * ITEMS_PER_PAGE >= publishedZonePlans.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
-                          }`}
-                        >
-                          Next →
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: SQUAD HEALTH MATRIX */}
-        {can('view_squad_health_matrix') && activeTab === 'matrix' && (
+        {/* TAB 3: SQUAD HEALTH MATRIX */}
+        {activeTab === 'matrix' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex justify-between items-center">
               <div>
@@ -1920,8 +1784,8 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 5: MULTI-ZONE NET ALLOCATOR */}
-        {can('create_zone_plans') && activeTab === 'allocator' && (
+        {/* TAB 4: MULTI-ZONE NET ALLOCATOR */}
+        {activeTab === 'allocator' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -1941,7 +1805,7 @@ export default function App() {
             <div className="space-y-4">
               {zonePlans.filter(p => p.clubId === activeClubId).length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  No club training plans published yet for this workspace.
+                  No club training plans published yet for this workspace. Click the button above to create your first multi-zone training plan!
                 </div>
               ) : (
                 zonePlans.filter(p => p.clubId === activeClubId).map(plan => {
@@ -1974,20 +1838,18 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center gap-2">
-                          {can('edit_zone_plans') && (
-                            <button
-                              onClick={() => {
-                                if (isPastPlan) return;
-                                handleOpenCreateZonePlanModal(plan);
-                              }}
-                              disabled={isPastPlan}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
-                              }`}
-                            >
-                              ✏️ Edit
-                            </button>
-                          )}
+                          <button
+                            onClick={() => {
+                              if (isPastPlan) return;
+                              handleOpenCreateZonePlanModal(plan);
+                            }}
+                            disabled={isPastPlan}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                              isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
+                            }`}
+                          >
+                            ✏️ Edit
+                          </button>
 
                           <button
                             onClick={async () => {
@@ -2012,26 +1874,24 @@ export default function App() {
                             📋 Duplicate
                           </button>
 
-                          {can('edit_zone_plans') && (
-                            <button
-                              onClick={async () => {
-                                if (isPastPlan) return;
-                                const planRef = doc(db, 'zone_plans', plan.id);
-                                await deleteDoc(planRef);
-                                triggerNotify('Training plan deleted from Firestore.', 'info');
-                              }}
-                              disabled={isPastPlan}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
-                              }`}
-                            >
-                              Delete Plan
-                            </button>
-                          )}
+                          <button
+                            onClick={async () => {
+                              if (isPastPlan) return;
+                              const planRef = doc(db, 'zone_plans', plan.id);
+                              await deleteDoc(planRef);
+                              triggerNotify('Training plan deleted from Firestore.', 'info');
+                            }}
+                            disabled={isPastPlan}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                              isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
+                            }`}
+                          >
+                            Delete Plan
+                          </button>
                         </div>
                       </div>
 
-                      {plan.pollEnabled !== false && can('view_poll_results') && (
+                      {plan.pollEnabled !== false && (
                         <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
                           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-2">
                             <span className="font-extrabold text-xs text-emerald-400">📊 Live Attendance Poll Results</span>
@@ -2123,8 +1983,8 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 6: CLUB & SQUAD COMMUNICATION & ANNOUNCEMENTS HUB */}
-        {!isPersonalWorkspace && activeTab === 'announcements' && (
+        {/* TAB 5: CLUB ANNOUNCEMENTS */}
+        {activeTab === 'announcements' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -2132,7 +1992,7 @@ export default function App() {
                   <IconMegaphone /> Club & Squad Announcements Board
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Important notices, weather updates, and match-day broadcasts for {currentClub.name}.
+                  Important notices, weather updates, and broadcasts across your clubs.
                 </p>
               </div>
 
@@ -2147,28 +2007,23 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              {announcements.filter(ann => {
-                if (ann.clubId !== activeClubId) return false;
-                if (ann.targetSquadId === 'ALL') return true;
-                return currentUserAssignedSquadIds.includes(ann.targetSquadId);
-              }).length === 0 ? (
+              {unifiedAnnouncements.length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
                   No announcements found for your assigned squads.
                 </div>
               ) : (
-                announcements.filter(ann => {
-                  if (ann.clubId !== activeClubId) return false;
-                  if (ann.targetSquadId === 'ALL') return true;
-                  return currentUserAssignedSquadIds.includes(ann.targetSquadId);
-                }).map(ann => {
-                  const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club (All Squads)' : (currentClub.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
+                unifiedAnnouncements.map(ann => {
+                  const parentClub = clubs.find(c => c.id === ann.clubId);
+                  const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : 'CLUB';
+                  const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
+                  
                   return (
                     <div key={ann.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-extrabold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                              📢 {targetSquadName}
+                            <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
+                              🏏 {clubAbbr} — 📢 {targetSquadName}
                             </span>
                             <h3 className="font-bold text-base text-white">{ann.title}</h3>
                           </div>
@@ -2199,7 +2054,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 7: CLUB ROSTER & CAPABILITY MATRIX */}
+        {/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
         {can('manage_roster') && activeTab === 'roster' && (
           <div className="space-y-6">
             <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2976,12 +2831,24 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Club Short Code / Identifier</label>
+                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Club Abbreviation (Tag)</label>
+                  <input
+                    type="text"
+                    value={newClubAbbr}
+                    onChange={(e) => setNewClubAbbr(e.target.value)}
+                    placeholder="e.g. UTSC"
+                    required
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white font-mono uppercase font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Club Invite Code</label>
                   <input
                     type="text"
                     value={newClubCode}
                     onChange={(e) => setNewClubCode(e.target.value)}
-                    placeholder="e.g. GCC or MCC"
+                    placeholder="e.g. UTSC123"
                     required
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white font-mono uppercase font-bold"
                   />
