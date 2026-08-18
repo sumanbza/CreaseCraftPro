@@ -95,6 +95,9 @@ export default function App() {
   const [onboardingTab, setOnboardingTab] = useState('CREATE');
   const [authError, setAuthError] = useState('');
   const [onboardingError, setOnboardingError] = useState('');
+  const [lastReadAnnouncementTime, setLastReadAnnouncementTime] = useState(() => {
+    return localStorage.getItem('last_read_announcements') || '1970-01-01T00:00:00.000Z';
+  });
 
   // Form State
   const [email, setEmail] = useState('');
@@ -129,9 +132,11 @@ export default function App() {
 
   // Unified Training Hub Filtering & Pagination State
   const [trainingFeedPage, setTrainingFeedPage] = useState(1);
+  const [clubPlansPage, setClubPlansPage] = useState(1);
   const [unifiedDateJump, setUnifiedDateJump] = useState('');
   const [trainingFilterType, setTrainingFilterType] = useState('ALL');
   const [expandedUnifiedSessionIds, setExpandedUnifiedSessionIds] = useState({});
+  const [expandedClubPlanIds, setExpandedClubPlanIds] = useState({});
   const ITEMS_PER_PAGE = 5;
 
   // Verification & Form Modals
@@ -266,7 +271,8 @@ export default function App() {
     }, err => console.error("Poll responses listener error:", err));
 
     const unSubAnnouncements = onSnapshot(collection(db, 'announcements'), (snapshot) => {
-      setAnnouncements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const docsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAnnouncements(docsList);
     }, err => console.error("Announcements listener error:", err));
 
     const unSubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -335,9 +341,34 @@ export default function App() {
     }
     setUserProfile(null);
     setActiveClubId('club-personal');
+    setActiveTab('dashboard');
     setAuthMode('SIGNIN');
     setShowAuthModal(true);
     triggerNotify('Signed out of CreaseCraft.', 'info');
+  };
+
+  const requestPushNotifications = async () => {
+    if (!('Notification' in window)) {
+      triggerNotify('This browser does not support push notifications.', 'info');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        setPushPermissionGranted(true);
+        triggerNotify('Push notification permissions granted! ✓', 'success');
+        if (auth?.currentUser) {
+          await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+            fcmPushEnabled: true,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      } else {
+        triggerNotify('Notification permission denied.', 'info');
+      }
+    } catch (err) {
+      console.error("Error requesting push permission:", err);
+    }
   };
 
   const isPersonalWorkspace = activeClubId === 'club-personal';
@@ -368,7 +399,7 @@ export default function App() {
       if (isPersonalWorkspace) {
         return ['log_own_workload', 'view_squad_schedule'].includes(capabilityKey);
       }
-      if (!currentUserMembership) return true; // Fallback permit if membership exists
+      if (!currentUserMembership) return true;
 
       const memberRoles = Array.isArray(currentUserMembership.roles) ? currentUserMembership.roles : [currentUserMembership.roles];
       const normalizedRoles = memberRoles.map(r => String(r || '').toLowerCase());
@@ -386,7 +417,7 @@ export default function App() {
           }
         }
       }
-      return true; // Default allow for active management context
+      return true;
     };
   }, [isPersonalWorkspace, currentUserMembership, currentClub]);
 
@@ -403,7 +434,7 @@ export default function App() {
     return userMemberships.map(m => {
       const club = clubs.find(c => c.id === m.clubId);
       if (!club) return null;
-      return club; // Allow all clubs the user belongs to in managing dropdown
+      return club;
     }).filter(Boolean);
   }, [userMemberships, clubs]);
 
@@ -468,14 +499,40 @@ export default function App() {
     return unifiedTrainingFeed.slice(start, start + ITEMS_PER_PAGE);
   }, [unifiedTrainingFeed, trainingFeedPage]);
 
+  // Paginated Club Training Plans for Club Workspace
+  const clubWorkspacePlans = useMemo(() => {
+    return zonePlans.filter(p => p.clubId === activeClubId);
+  }, [zonePlans, activeClubId]);
+
+  const paginatedClubWorkspacePlans = useMemo(() => {
+    const start = (clubPlansPage - 1) * ITEMS_PER_PAGE;
+    return clubWorkspacePlans.slice(start, start + ITEMS_PER_PAGE);
+  }, [clubWorkspacePlans, clubPlansPage]);
+
+  // Announcements list
   const unifiedAnnouncements = useMemo(() => {
-    const userClubIds = userMemberships.map(m => m.clubId);
-    return announcements.filter(ann => {
-      if (!userClubIds.includes(ann.clubId)) return false;
-      if (ann.targetSquadId === 'ALL') return true;
-      return currentUserAssignedSquadIds.includes(ann.targetSquadId);
-    });
-  }, [announcements, userMemberships, currentUserAssignedSquadIds]);
+    if (isPersonalWorkspace) {
+      const list = [...announcements];
+      list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      return list;
+    } else {
+      const list = announcements.filter(ann => ann.clubId === activeClubId);
+      list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      return list;
+    }
+  }, [isPersonalWorkspace, announcements, activeClubId]);
+
+  // Unread badge count (announcements created after lastReadAnnouncementTime)
+  const unreadAnnouncementsCount = useMemo(() => {
+    return unifiedAnnouncements.filter(ann => new Date(ann.createdAt || 0) > new Date(lastReadAnnouncementTime)).length;
+  }, [unifiedAnnouncements, lastReadAnnouncementTime]);
+
+  const handleOpenAnnouncementsTab = () => {
+    setActiveTab('announcements');
+    const nowISO = new Date().toISOString();
+    setLastReadAnnouncementTime(nowISO);
+    localStorage.setItem('last_read_announcements', nowISO);
+  };
 
   const resolveMemberFullName = (userId) => {
     const foundUser = allUsers.find(u => u.uid === userId || u.id === userId);
@@ -588,7 +645,7 @@ export default function App() {
       });
 
       setActiveClubId(foundClub.id);
-      setActiveTab('personal-planner');
+      setActiveTab('dashboard');
       setShowClubOnboardingModal(false);
       setJoinClubCode('');
       setOnboardingError('');
@@ -702,7 +759,7 @@ export default function App() {
           visibleToPlayers: newVisibleToPlayers,
           timeSlots: updatedTimeSlots
         });
-        triggerNotify('Updated multi-zone training plan & player visibility! ✓', 'success');
+        triggerNotify('Updated club training plan & player visibility! ✓', 'success');
       } else {
         await addDoc(collection(db, 'zone_plans'), {
           clubId: activeClubId,
@@ -713,7 +770,7 @@ export default function App() {
           timeSlots: updatedTimeSlots,
           createdAt: new Date().toISOString()
         });
-        triggerNotify('Published multi-zone plan with player visibility flag! ✓', 'success');
+        triggerNotify('Published club training plan with player visibility flag! ✓', 'success');
       }
     } catch (err) {
       console.error("Error saving zone plan:", err);
@@ -992,6 +1049,13 @@ export default function App() {
               <IconPlus /> Manage / Join Club
             </button>
 
+            <button
+              onClick={requestPushNotifications}
+              className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 font-bold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
+            >
+              🔔 Enable Push
+            </button>
+
             <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1 rounded-xl text-xs">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               <div className="text-left">
@@ -1020,72 +1084,96 @@ export default function App() {
 
       <main className="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         
+        {/* CONTEXTUAL NAVIGATION TABS */}
         <div className="flex border-b border-slate-800 mb-6 overflow-x-auto">
-          {can('view_squad_health_matrix') && (
-            <button
-              onClick={() => setActiveTab('matrix')}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-                activeTab === 'matrix' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-              }`}
-            >
-              <IconActivity /> Squad Health Matrix
-            </button>
+          {isPersonalWorkspace ? (
+            <>
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
+                  activeTab === 'dashboard' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                }`}
+              >
+                <IconActivity /> Personal ACWR Analytics
+              </button>
+
+              <button
+                onClick={() => setActiveTab('personal-planner')}
+                className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
+                  activeTab === 'personal-planner' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                }`}
+              >
+                <IconUser /> Training Planner
+              </button>
+
+              <button
+                onClick={handleOpenAnnouncementsTab}
+                className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all relative ${
+                  activeTab === 'announcements' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                }`}
+              >
+                <IconMegaphone /> Announcements & Notices
+                {unreadAnnouncementsCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 text-[9px] font-black bg-rose-500 text-white rounded-full animate-pulse">
+                    {unreadAnnouncementsCount}
+                  </span>
+                )}
+              </button>
+            </>
+          ) : (
+            <>
+              {can('view_squad_health_matrix') && (
+                <button
+                  onClick={() => setActiveTab('matrix')}
+                  className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
+                    activeTab === 'matrix' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                  }`}
+                >
+                  <IconActivity /> Squad Health Matrix
+                </button>
+              )}
+
+              {can('create_zone_plans') && (
+                <button
+                  onClick={() => setActiveTab('allocator')}
+                  className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
+                    activeTab === 'allocator' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                  }`}
+                >
+                  <IconGrid /> Club Training Planner
+                </button>
+              )}
+
+              {can('manage_roster') && (
+                <button
+                  onClick={() => setActiveTab('roster')}
+                  className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
+                    activeTab === 'roster' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                  }`}
+                >
+                  <IconUsers /> Club Roster & Capability Matrix
+                </button>
+              )}
+
+              <button
+                onClick={handleOpenAnnouncementsTab}
+                className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all relative ${
+                  activeTab === 'announcements' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
+                }`}
+              >
+                <IconMegaphone /> Announcements & Notices
+                {unreadAnnouncementsCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 text-[9px] font-black bg-rose-500 text-white rounded-full animate-pulse">
+                    {unreadAnnouncementsCount}
+                  </span>
+                )}
+              </button>
+            </>
           )}
-
-          {can('create_zone_plans') && (
-            <button
-              onClick={() => setActiveTab('allocator')}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-                activeTab === 'allocator' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-              }`}
-            >
-              <IconGrid /> Multi-Zone Net Allocator
-            </button>
-          )}
-
-          {can('manage_roster') && (
-            <button
-              onClick={() => setActiveTab('roster')}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-                activeTab === 'roster' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-              }`}
-            >
-              <IconUsers /> Club Roster & Capability Matrix
-            </button>
-          )}
-
-          {userMemberships.length > 0 && (
-            <button
-              onClick={() => setActiveTab('announcements')}
-              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-                activeTab === 'announcements' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-              }`}
-            >
-              <IconMegaphone /> Announcements & Notices
-            </button>
-          )}
-
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-              activeTab === 'dashboard' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-            }`}
-          >
-            <IconActivity /> Personal ACWR Analytics
-          </button>
-
-          <button
-            onClick={() => setActiveTab('personal-planner')}
-            className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
-              activeTab === 'personal-planner' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5' : 'border-transparent text-slate-400'
-            }`}
-          >
-            <IconUser /> Training Planner
-          </button>
         </div>
 
         {/* TAB 1: PERSONAL ACWR ANALYTICS */}
-        {activeTab === 'dashboard' && (
+        {isPersonalWorkspace && activeTab === 'dashboard' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
@@ -1191,7 +1279,7 @@ export default function App() {
         )}
 
         {/* TAB 2: UNIFIED TRAINING PLANNER */}
-        {activeTab === 'personal-planner' && (
+        {isPersonalWorkspace && activeTab === 'personal-planner' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -1750,7 +1838,7 @@ export default function App() {
         )}
 
         {/* TAB 3: SQUAD HEALTH MATRIX */}
-        {activeTab === 'matrix' && (
+        {!isPersonalWorkspace && activeTab === 'matrix' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex justify-between items-center">
               <div>
@@ -1784,206 +1872,256 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 4: MULTI-ZONE NET ALLOCATOR */}
-        {activeTab === 'allocator' && (
+        {/* TAB 4: CLUB TRAINING PLANNER */}
+        {!isPersonalWorkspace && activeTab === 'allocator' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                  <IconGrid /> Multi-Zone Net Allocator & Microcycle Planner
+                  <IconGrid /> Club Training Planner & Net Allocations
                 </h2>
-                <p className="text-xs text-slate-400 mt-0.5">Design Zone 1 net allocations alongside custom zones with live attendance poll tracking.</p>
+                <p className="text-xs text-slate-400 mt-0.5">Design multi-zone training sessions, net lanes, and live attendance tracking for {currentClub.name}.</p>
               </div>
               <button
                 onClick={() => handleOpenCreateZonePlanModal()}
                 className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-1.5"
               >
-                <IconPlus /> Create Multi-Zone Training Night Plan
+                <IconPlus /> Create Club Training Plan
               </button>
             </div>
 
             <div className="space-y-4">
-              {zonePlans.filter(p => p.clubId === activeClubId).length === 0 ? (
+              {clubWorkspacePlans.length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  No club training plans published yet for this workspace. Click the button above to create your first multi-zone training plan!
+                  No club training plans published yet for {currentClub.name}. Click the button above to create your first session!
                 </div>
               ) : (
-                zonePlans.filter(p => p.clubId === activeClubId).map(plan => {
-                  const isPastPlan = plan.date < todayFormatted;
-                  const slot = plan.timeSlots?.[0];
-                  const availableSquads = currentClub.squads || [];
-                  const customZonesList = slot?.customZones || [
-                    { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
-                    { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'Fielding Drills', squadIds: [] }
-                  ];
+                <div className="space-y-4">
+                  {paginatedClubWorkspacePlans.map(plan => {
+                    const isPastPlan = plan.date < todayFormatted;
+                    const slot = plan.timeSlots?.[0];
+                    const availableSquads = currentClub.squads || [];
+                    const customZonesList = slot?.customZones || [
+                      { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: slot?.centerWicket?.title || 'Match Scenario', squadIds: [] },
+                      { id: 'zone-3', title: 'Zone 3: Fielding & Boundary Relay', activityText: slot?.fieldingStation?.title || 'Fielding Drills', squadIds: [] }
+                    ];
 
-                  const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
-                  const attendingList = sessionPollResponses.filter(pr => pr.status === 'ATTENDING');
-                  const declinedList = sessionPollResponses.filter(pr => pr.status === 'DECLINED');
-                  const maybeList = sessionPollResponses.filter(pr => pr.status === 'MAYBE');
+                    const sessionPollResponses = pollResponses.filter(pr => pr.planId === plan.id);
+                    const attendingList = sessionPollResponses.filter(pr => pr.status === 'ATTENDING');
+                    const declinedList = sessionPollResponses.filter(pr => pr.status === 'DECLINED');
+                    const maybeList = sessionPollResponses.filter(pr => pr.status === 'MAYBE');
 
-                  const isVisibleToPlayers = plan.visibleToPlayers !== false;
+                    const isVisibleToPlayers = plan.visibleToPlayers !== false;
+                    const isExpanded = !!expandedClubPlanIds[plan.id];
 
-                  return (
-                    <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-bold text-base text-white">{plan.title}</h3>
-                            <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${isVisibleToPlayers ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                    return (
+                      <div key={plan.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                        
+                        <div 
+                          onClick={() => setExpandedClubPlanIds(prev => ({ ...prev, [plan.id]: !prev[plan.id] }))}
+                          className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 cursor-pointer select-none"
+                        >
+                          <div>
+                            <h3 className="font-black text-base text-white tracking-tight">
+                              📅 {plan.date}
+                            </h3>
+                            <h4 className="font-semibold text-xs text-slate-200 mt-0.5">
+                              {plan.title} — <span className="text-slate-400">⏰ {slot?.time || '6:00 PM - 7:30 PM'}</span>
+                            </h4>
+                          </div>
+
+                          <div className="flex items-center gap-3 ml-auto sm:ml-0">
+                            <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold border ${isVisibleToPlayers ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
                               {isVisibleToPlayers ? '👁️ Visible to Players' : '🔒 Hidden from Players'}
                             </span>
-                          </div>
-                          <span className="text-xs text-emerald-400 font-bold block mt-0.5">📅 Date: {plan.date} | ⏰ {slot?.time || '6:00 PM - 7:30 PM'}</span>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              if (isPastPlan) return;
-                              handleOpenCreateZonePlanModal(plan);
-                            }}
-                            disabled={isPastPlan}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                              isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
-                            }`}
-                          >
-                            ✏️ Edit
-                          </button>
-
-                          <button
-                            onClick={async () => {
-                              try {
-                                const duplicatedZonePlan = {
-                                  clubId: plan.clubId || activeClubId,
-                                  title: plan.title + ' (Copy)',
-                                  date: nextWeekFormatted,
-                                  pollEnabled: plan.pollEnabled !== false,
-                                  visibleToPlayers: true,
-                                  timeSlots: plan.timeSlots || [],
-                                  createdAt: new Date().toISOString()
-                                };
-                                await addDoc(collection(db, 'zone_plans'), duplicatedZonePlan);
-                                triggerNotify('Training night plan duplicated for next week! ✓', 'success');
-                              } catch (err) {
-                                console.error("Error duplicating zone plan:", err);
-                              }
-                            }}
-                            className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                          >
-                            📋 Duplicate
-                          </button>
-
-                          <button
-                            onClick={async () => {
-                              if (isPastPlan) return;
-                              const planRef = doc(db, 'zone_plans', plan.id);
-                              await deleteDoc(planRef);
-                              triggerNotify('Training plan deleted from Firestore.', 'info');
-                            }}
-                            disabled={isPastPlan}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                              isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
-                            }`}
-                          >
-                            Delete Plan
-                          </button>
-                        </div>
-                      </div>
-
-                      {plan.pollEnabled !== false && (
-                        <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-2">
-                            <span className="font-extrabold text-xs text-emerald-400">📊 Live Attendance Poll Results</span>
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded font-bold">✓ Attending: {attendingList.length}</span>
-                              <span className="bg-rose-500/20 text-rose-300 px-2.5 py-0.5 rounded font-bold">✕ Declined: {declinedList.length}</span>
-                              <span className="bg-amber-500/20 text-amber-300 px-2.5 py-0.5 rounded font-bold">? Maybe: {maybeList.length}</span>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                            <div className="bg-emerald-500/5 p-3 rounded-xl border border-emerald-500/20 space-y-1">
-                              <span className="font-bold text-emerald-400 block">Attending ({attendingList.length})</span>
-                              <div className="text-slate-300 text-[11px]">
-                                {attendingList.length > 0 ? attendingList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">No responses yet</span>}
-                              </div>
-                            </div>
-
-                            <div className="bg-rose-500/5 p-3 rounded-xl border border-rose-500/20 space-y-1">
-                              <span className="font-bold text-rose-400 block">Declined ({declinedList.length})</span>
-                              <div className="text-slate-300 text-[11px]">
-                                {declinedList.length > 0 ? declinedList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">None</span>}
-                              </div>
-                            </div>
-
-                            <div className="bg-amber-500/5 p-3 rounded-xl border border-amber-500/20 space-y-1">
-                              <span className="font-bold text-amber-400 block">Maybe ({maybeList.length})</span>
-                              <div className="text-slate-300 text-[11px]">
-                                {maybeList.length > 0 ? maybeList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">None</span>}
-                              </div>
-                            </div>
+                            <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-950 text-slate-300 border border-slate-800">
+                              {isExpanded ? '▲ Collapse' : '▼ Expand'}
+                            </span>
                           </div>
                         </div>
-                      )}
 
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                        <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
-                          <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
-                            🏏 Zone 1: Net Lanes & Allocation
-                          </span>
-                          {slot?.netLanes && slot.netLanes.length > 0 ? (
-                            <div className="space-y-2">
-                              {slot.netLanes.map((lane, idx) => (
-                                <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                  <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
-                                  <div className="text-slate-400">
-                                    <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : (Array.isArray(lane.batters) ? lane.batters.join(', ') : 'Unassigned')}</strong></span>
-                                  </div>
-                                  <div className="text-slate-400">
-                                    <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
+                        {isExpanded && (
+                          <div className="space-y-4 pt-4 mt-3 border-t border-slate-800 animate-fadeIn">
+                            <div className="flex flex-wrap items-center gap-2 justify-end">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (isPastPlan) return;
+                                  handleOpenCreateZonePlanModal(plan);
+                                }}
+                                disabled={isPastPlan}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                  isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800'
+                                }`}
+                              >
+                                ✏️ Edit
+                              </button>
+
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    const duplicatedZonePlan = {
+                                      clubId: plan.clubId || activeClubId,
+                                      title: plan.title + ' (Copy)',
+                                      date: nextWeekFormatted,
+                                      pollEnabled: plan.pollEnabled !== false,
+                                      visibleToPlayers: true,
+                                      timeSlots: plan.timeSlots || [],
+                                      createdAt: new Date().toISOString()
+                                    };
+                                    await addDoc(collection(db, 'zone_plans'), duplicatedZonePlan);
+                                    triggerNotify('Training night plan duplicated for next week! ✓', 'success');
+                                  } catch (err) {
+                                    console.error("Error duplicating zone plan:", err);
+                                  }
+                                }}
+                                className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                              >
+                                📋 Duplicate
+                              </button>
+
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (isPastPlan) return;
+                                  const planRef = doc(db, 'zone_plans', plan.id);
+                                  await deleteDoc(planRef);
+                                  triggerNotify('Training plan deleted from Firestore.', 'info');
+                                }}
+                                disabled={isPastPlan}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                  isPastPlan ? 'bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800'
+                                }`}
+                              >
+                                Delete Plan
+                              </button>
+                            </div>
+
+                            {plan.pollEnabled !== false && (
+                              <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-2">
+                                  <span className="font-extrabold text-xs text-emerald-400">📊 Live Attendance Poll Results</span>
+                                  <div className="flex items-center gap-2 text-xs">
+                                    <span className="bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded font-bold">✓ Attending: {attendingList.length}</span>
+                                    <span className="bg-rose-500/20 text-rose-300 px-2.5 py-0.5 rounded font-bold">✕ Declined: {declinedList.length}</span>
+                                    <span className="bg-amber-500/20 text-amber-300 px-2.5 py-0.5 rounded font-bold">? Maybe: {maybeList.length}</span>
                                   </div>
                                 </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-slate-500 italic block">No net lanes configured</span>
-                          )}
-                        </div>
 
-                        {customZonesList.map((zone, zIdx) => {
-                          const assignedSquadNames = (zone.squadIds || []).map(sqId => {
-                            const foundSq = availableSquads.find(s => s.id === sqId);
-                            return foundSq ? foundSq.name : null;
-                          }).filter(Boolean);
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                                  <div className="bg-emerald-500/5 p-3 rounded-xl border border-emerald-500/20 space-y-1">
+                                    <span className="font-bold text-emerald-400 block">Attending ({attendingList.length})</span>
+                                    <div className="text-slate-300 text-[11px]">
+                                      {attendingList.length > 0 ? attendingList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">No responses yet</span>}
+                                    </div>
+                                  </div>
 
-                          return (
-                            <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
-                              <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
-                                🏟️ {zone.title || `Zone ${zIdx + 2}`}
-                              </span>
-                              <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
-                                <span className="text-slate-200 font-semibold block">
-                                  {zone.activityText || 'No activity specified'}
+                                  <div className="bg-rose-500/5 p-3 rounded-xl border border-rose-500/20 space-y-1">
+                                    <span className="font-bold text-rose-400 block">Declined ({declinedList.length})</span>
+                                    <div className="text-slate-300 text-[11px]">
+                                      {declinedList.length > 0 ? declinedList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">None</span>}
+                                    </div>
+                                  </div>
+
+                                  <div className="bg-amber-500/5 p-3 rounded-xl border border-amber-500/20 space-y-1">
+                                    <span className="font-bold text-amber-400 block">Maybe ({maybeList.length})</span>
+                                    <div className="text-slate-300 text-[11px]">
+                                      {maybeList.length > 0 ? maybeList.map(a => a.userName).join(', ') : <span className="text-slate-500 italic">None</span>}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+                              <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
+                                <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
+                                  🏏 Zone 1: Net Lanes & Allocation
                                 </span>
-                                <div className="text-slate-400 pt-1 border-t border-slate-800">
-                                  <span>Squads: <strong className="text-emerald-400">{assignedSquadNames.length > 0 ? assignedSquadNames.join(', ') : 'None Assigned'}</strong></span>
-                                </div>
+                                {slot?.netLanes && slot.netLanes.length > 0 ? (
+                                  <div className="space-y-2">
+                                    {slot.netLanes.map((lane, idx) => (
+                                      <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                        <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
+                                        <div className="text-slate-400">
+                                          <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : (Array.isArray(lane.batters) ? lane.batters.join(', ') : 'Unassigned')}</strong></span>
+                                        </div>
+                                        <div className="text-slate-400">
+                                          <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-[11px] text-slate-500 italic block">No net lanes configured</span>
+                                )}
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
 
+                              {customZonesList.map((zone, zIdx) => {
+                                const assignedSquadNames = (zone.squadIds || []).map(sqId => {
+                                  const foundSq = availableSquads.find(s => s.id === sqId);
+                                  return foundSq ? foundSq.name : null;
+                                }).filter(Boolean);
+
+                                return (
+                                  <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
+                                    <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
+                                      🏟️ {zone.title || `Zone ${zIdx + 2}`}
+                                    </span>
+                                    <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
+                                      <span className="text-slate-200 font-semibold block">
+                                        {zone.activityText || 'No activity specified'}
+                                      </span>
+                                      <div className="text-slate-400 pt-1 border-t border-slate-800">
+                                        <span>Squads: <strong className="text-emerald-400">{assignedSquadNames.length > 0 ? assignedSquadNames.join(', ') : 'None Assigned'}</strong></span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+                    );
+                  })}
+
+                  {clubWorkspacePlans.length > ITEMS_PER_PAGE && (
+                    <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs">
+                      <span className="text-slate-400 font-semibold">
+                        Showing page {clubPlansPage} of {Math.ceil(clubWorkspacePlans.length / ITEMS_PER_PAGE)}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setClubPlansPage(p => Math.max(1, p - 1))}
+                          disabled={clubPlansPage === 1}
+                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                            clubPlansPage === 1 ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          ← Previous
+                        </button>
+                        <button
+                          onClick={() => setClubPlansPage(p => (p * ITEMS_PER_PAGE < clubWorkspacePlans.length ? p + 1 : p))}
+                          disabled={clubPlansPage * ITEMS_PER_PAGE >= clubWorkspacePlans.length}
+                          className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
+                            clubPlansPage * ITEMS_PER_PAGE >= clubWorkspacePlans.length ? 'bg-slate-950 text-slate-600 border-slate-800 cursor-not-allowed' : 'bg-slate-950 text-slate-200 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          Next →
+                        </button>
+                      </div>
                     </div>
-                  );
-                })
+                  )}
+                </div>
               )}
             </div>
           </div>
         )}
 
-        {/* TAB 5: CLUB ANNOUNCEMENTS */}
+        {/* TAB 5: ANNOUNCEMENTS & NOTICES */}
         {activeTab === 'announcements' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1992,7 +2130,9 @@ export default function App() {
                   <IconMegaphone /> Club & Squad Announcements Board
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Important notices, weather updates, and broadcasts across your clubs.
+                  {isPersonalWorkspace 
+                    ? "Important notices and broadcasts across all your clubs." 
+                    : `Important notices, weather updates, and broadcasts for ${currentClub.name}.`}
                 </p>
               </div>
 
@@ -2009,12 +2149,12 @@ export default function App() {
             <div className="space-y-4">
               {unifiedAnnouncements.length === 0 ? (
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  No announcements found for your assigned squads.
+                  No announcements found.
                 </div>
               ) : (
                 unifiedAnnouncements.map(ann => {
                   const parentClub = clubs.find(c => c.id === ann.clubId);
-                  const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : 'CLUB';
+                  const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : '';
                   const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
                   
                   return (
@@ -2023,7 +2163,7 @@ export default function App() {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
-                              🏏 {clubAbbr} — 📢 {targetSquadName}
+                              {isPersonalWorkspace && clubAbbr ? `🏏 ${clubAbbr} — ` : ''}📢 {targetSquadName}
                             </span>
                             <h3 className="font-bold text-base text-white">{ann.title}</h3>
                           </div>
@@ -2055,7 +2195,7 @@ export default function App() {
         )}
 
         {/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
-        {can('manage_roster') && activeTab === 'roster' && (
+        {!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
           <div className="space-y-6">
             <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -2384,23 +2524,21 @@ export default function App() {
             
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-                {activeTab === 'allocator' 
-                  ? "🏏 Create / Edit Multi-Zone Training Night Plan" 
-                  : "👤 Plan Personal Session"}
+                🏏 Create / Edit Club Training Plan
               </h3>
               <button onClick={() => setShowCreatePlanModal(false)} className="text-slate-400 hover:text-white font-bold text-xs">
                 ✕ Close
               </button>
             </div>
 
-            <form onSubmit={activeTab === 'allocator' ? handleSaveZonePlan : handleSavePersonalPlan} className="space-y-4">
+            <form onSubmit={handleSaveZonePlan} className="space-y-4">
               <div>
                 <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Session Title</label>
                 <input
                   type="text"
                   value={newPlanTitle}
                   onChange={(e) => setNewPlanTitle(e.target.value)}
-                  placeholder="e.g. Solo Throwdown & Run-Up Rhythm"
+                  placeholder="e.g. Tuesday Night Main Squad Microcycle"
                   required
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500 font-semibold"
                 />
@@ -2423,292 +2561,235 @@ export default function App() {
                     type="text"
                     value={newPlanTime}
                     onChange={(e) => setNewPlanTime(e.target.value)}
-                    placeholder="e.g. 4:00 PM - 5:30 PM"
+                    placeholder="e.g. 6:00 PM - 7:30 PM"
                     required
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
 
-              {activeTab === 'allocator' ? (
-                <div className="space-y-4 pt-2">
-                  <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
-                      <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 font-bold">
-                        <input
-                          type="checkbox"
-                          checked={newPollEnabled}
-                          onChange={(e) => setNewPollEnabled(e.target.checked)}
-                          className="accent-emerald-500 rounded h-4 w-4"
-                        />
-                        Enable Attendance Poll for this Session
-                      </label>
-
-                      <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold ${newPlanDate < todayFormatted ? 'opacity-50 cursor-not-allowed' : 'text-emerald-400'}`}>
-                        <input
-                          type="checkbox"
-                          disabled={newPlanDate < todayFormatted}
-                          checked={newVisibleToPlayers}
-                          onChange={(e) => setNewVisibleToPlayers(e.target.checked)}
-                          className="accent-emerald-500 rounded h-4 w-4"
-                        />
-                        👁️ Visible to Players
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                      <h4 className="font-extrabold text-xs text-emerald-400">🏏 Zone 1: Net Lanes & Allocation</h4>
-                      <button
-                        type="button"
-                        onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '' }])}
-                        className="bg-emerald-500/20 text-emerald-400 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-500/40"
-                      >
-                        + Add Net Lane
-                      </button>
-                    </div>
-
-                    {newNetLanes.map((lane, index) => (
-                      <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                        <input
-                          type="text"
-                          value={lane.name}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
-                          }}
-                          className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
-                        />
-
-                        <div className="space-y-1">
-                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
-                          <div className="flex gap-2">
-                            <select
-                              onChange={(e) => {
-                                if (!e.target.value) return;
-                                const selected = e.target.value;
-                                const current = lane.batters ? lane.batters.split(', ').filter(Boolean) : [];
-                                if (!current.includes(selected)) {
-                                  const updated = [...current, selected].join(', ');
-                                  setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: updated } : l));
-                                }
-                                e.target.value = '';
-                              }}
-                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
-                            >
-                              <option value="">+ Add Batter from Club Roster...</option>
-                              {clubRosterList.map(member => (
-                                <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
-                              ))}
-                            </select>
-                            <input
-                              type="text"
-                              value={lane.batters}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: val } : l));
-                              }}
-                              placeholder="Or type batters manually..."
-                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Bowlers & Quotas</label>
-                          <div className="flex gap-2">
-                            <select
-                              onChange={(e) => {
-                                if (!e.target.value) return;
-                                const selected = e.target.value;
-                                const current = lane.bowlersText ? lane.bowlersText.split(', ').filter(Boolean) : [];
-                                const formatted = `${selected} (36b)`;
-                                if (!current.some(b => b.includes(selected))) {
-                                  const updated = [...current, formatted].join(', ');
-                                  setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: updated } : l));
-                                }
-                                e.target.value = '';
-                              }}
-                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
-                            >
-                              <option value="">+ Add Bowler from Club Roster...</option>
-                              {clubRosterList.map(member => (
-                                <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
-                              ))}
-                            </select>
-                            <input
-                              type="text"
-                              value={lane.bowlersText}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: val } : l));
-                              }}
-                              placeholder="Or type bowlers & balls (e.g. Pat Cummins (36b))"
-                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
-                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                      <h4 className="font-extrabold text-xs text-indigo-400">🏟️ Flexible Custom Zones & Activities</h4>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextNum = newCustomZones.length + 1;
-                          setNewCustomZones(prev => [
-                            ...prev, 
-                            { id: 'zone-' + Date.now(), title: `Zone ${nextNum}: Custom Activity`, activityText: '', squadIds: [] }
-                          ]);
-                        }}
-                        className="bg-indigo-500/20 text-indigo-300 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/40"
-                      >
-                        + Add Custom Zone
-                      </button>
-                    </div>
-
-                    {newCustomZones.map((zone, zIdx) => {
-                      const availableSquads = currentClub.squads || [];
-                      return (
-                        <div key={zone.id || zIdx} className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                          <div className="flex justify-between items-center gap-2">
-                            <input
-                              type="text"
-                              value={zone.title}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, title: val } : z));
-                              }}
-                              placeholder="Zone Title (e.g. Zone 2: Center Wicket)"
-                              className="bg-slate-950 border border-slate-800 text-indigo-300 font-bold text-xs p-2 rounded-lg flex-grow"
-                            />
-                            {newCustomZones.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => setNewCustomZones(prev => prev.filter((_, idx) => idx !== zIdx))}
-                                className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1"
-                              >
-                                ✕ Delete Zone
-                              </button>
-                            )}
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[9px] text-slate-400 uppercase font-bold block">Free Text Activity Description</label>
-                            <textarea
-                              rows="2"
-                              value={zone.activityText}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, activityText: val } : z));
-                              }}
-                              placeholder="Describe the activity, scenario, or training focus..."
-                              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                            />
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[9px] text-slate-400 uppercase font-bold block">Assign Multiple Squads to this Activity</label>
-                            <div className="flex flex-wrap gap-1.5">
-                              {availableSquads.map(sq => {
-                                const isAssigned = (zone.squadIds || []).includes(sq.id);
-                                return (
-                                  <button
-                                    key={sq.id}
-                                    type="button"
-                                    onClick={() => {
-                                      const currentSqIds = zone.squadIds || [];
-                                      let updatedSqIds;
-                                      if (isAssigned) {
-                                        updatedSqIds = currentSqIds.filter(id => id !== sq.id);
-                                      } else {
-                                        updatedSqIds = [...currentSqIds, sq.id];
-                                      }
-                                      setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, squadIds: updatedSqIds } : z));
-                                    }}
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                                      isAssigned 
-                                        ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
-                                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
-                                    }`}
-                                  >
-                                    {isAssigned ? '✓ ' : '+ '}{sq.name}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4 pt-2">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Target Ball Volume</label>
+              <div className="space-y-4 pt-2">
+                <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 font-bold">
                       <input
-                        type="number"
-                        value={personalPlanBalls}
-                        onChange={(e) => setPersonalPlanBalls(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
+                        type="checkbox"
+                        checked={newPollEnabled}
+                        onChange={(e) => setNewPollEnabled(e.target.checked)}
+                        className="accent-emerald-500 rounded h-4 w-4"
                       />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Target Effort (RPE 1-10)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="10"
-                        value={personalPlanRPE}
-                        onChange={(e) => setPersonalPlanRPE(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <label className="text-[10px] text-emerald-400 font-extrabold uppercase block border-b border-slate-800 pb-1">
-                      📋 Planned Session Activities (5 Steps)
+                      Enable Attendance Poll for this Session
                     </label>
-                    {personalActivities.map((act, index) => (
-                      <div key={index} className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-slate-400 w-20">Activity {index + 1}:</span>
-                        <input
-                          type="text"
-                          value={act}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setPersonalActivities(prev => prev.map((a, i) => i === index ? val : a));
-                          }}
-                          className="flex-grow bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
-                        />
-                      </div>
-                    ))}
-                  </div>
 
-                  <div>
-                    <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Technical Notes</label>
-                    <textarea
-                      rows="2"
-                      value={personalPlanNotes}
-                      onChange={(e) => setPersonalPlanNotes(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
-                    />
+                    <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold ${newPlanDate < todayFormatted ? 'opacity-50 cursor-not-allowed' : 'text-emerald-400'}`}>
+                      <input
+                        type="checkbox"
+                        disabled={newPlanDate < todayFormatted}
+                        checked={newVisibleToPlayers}
+                        onChange={(e) => setNewVisibleToPlayers(e.target.checked)}
+                        className="accent-emerald-500 rounded h-4 w-4"
+                      />
+                      👁️ Visible to Players
+                    </label>
                   </div>
                 </div>
-              )}
+
+                <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h4 className="font-extrabold text-xs text-emerald-400">🏏 Zone 1: Net Lanes & Allocation</h4>
+                    <button
+                      type="button"
+                      onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '' }])}
+                      className="bg-emerald-500/20 text-emerald-400 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-500/40"
+                    >
+                      + Add Net Lane
+                    </button>
+                  </div>
+
+                  {newNetLanes.map((lane, index) => (
+                    <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
+                      <input
+                        type="text"
+                        value={lane.name}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
+                        }}
+                        className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
+                      />
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
+                        <div className="flex gap-2">
+                          <select
+                            onChange={(e) => {
+                              if (!e.target.value) return;
+                              const selected = e.target.value;
+                              const current = lane.batters ? lane.batters.split(', ').filter(Boolean) : [];
+                              if (!current.includes(selected)) {
+                                const updated = [...current, selected].join(', ');
+                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: updated } : l));
+                              }
+                              e.target.value = '';
+                            }}
+                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
+                          >
+                            <option value="">+ Add Batter from Club Roster...</option>
+                            {clubRosterList.map(member => (
+                              <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={lane.batters}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: val } : l));
+                            }}
+                            placeholder="Or type batters manually..."
+                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Bowlers & Quotas</label>
+                        <div className="flex gap-2">
+                          <select
+                            onChange={(e) => {
+                              if (!e.target.value) return;
+                              const selected = e.target.value;
+                              const current = lane.bowlersText ? lane.bowlersText.split(', ').filter(Boolean) : [];
+                              const formatted = `${selected} (36b)`;
+                              if (!current.some(b => b.includes(selected))) {
+                                const updated = [...current, formatted].join(', ');
+                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: updated } : l));
+                              }
+                              e.target.value = '';
+                            }}
+                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
+                          >
+                            <option value="">+ Add Bowler from Club Roster...</option>
+                            {clubRosterList.map(member => (
+                              <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={lane.bowlersText}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: val } : l));
+                            }}
+                            placeholder="Or type bowlers & balls (e.g. Pat Cummins (36b))"
+                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h4 className="font-extrabold text-xs text-indigo-400">🏟️ Flexible Custom Zones & Activities</h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextNum = newCustomZones.length + 1;
+                        setNewCustomZones(prev => [
+                          ...prev, 
+                          { id: 'zone-' + Date.now(), title: `Zone ${nextNum}: Custom Activity`, activityText: '', squadIds: [] }
+                        ]);
+                      }}
+                      className="bg-indigo-500/20 text-indigo-300 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/40"
+                    >
+                      + Add Custom Zone
+                    </button>
+                  </div>
+
+                  {newCustomZones.map((zone, zIdx) => {
+                    const availableSquads = currentClub.squads || [];
+                    return (
+                      <div key={zone.id || zIdx} className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                        <div className="flex justify-between items-center gap-2">
+                          <input
+                            type="text"
+                            value={zone.title}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, title: val } : z));
+                            }}
+                            placeholder="Zone Title (e.g. Zone 2: Center Wicket)"
+                            className="bg-slate-950 border border-slate-800 text-indigo-300 font-bold text-xs p-2 rounded-lg flex-grow"
+                          />
+                          {newCustomZones.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setNewCustomZones(prev => prev.filter((_, idx) => idx !== zIdx))}
+                              className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1"
+                            >
+                              ✕ Delete Zone
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Free Text Activity Description</label>
+                          <textarea
+                            rows="2"
+                            value={zone.activityText}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, activityText: val } : z));
+                            }}
+                            placeholder="Describe the activity, scenario, or training focus..."
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assign Multiple Squads to this Activity</label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {availableSquads.map(sq => {
+                              const isAssigned = (zone.squadIds || []).includes(sq.id);
+                              return (
+                                <button
+                                  key={sq.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const currentSqIds = zone.squadIds || [];
+                                    let updatedSqIds;
+                                    if (isAssigned) {
+                                      updatedSqIds = currentSqIds.filter(id => id !== sq.id);
+                                    } else {
+                                      updatedSqIds = [...currentSqIds, sq.id];
+                                    }
+                                    setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, squadIds: updatedSqIds } : z));
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                                    isAssigned 
+                                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
+                                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                                  }`}
+                                >
+                                  {isAssigned ? '✓ ' : '+ '}{sq.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
 
               <button
                 type="submit"
                 className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3 rounded-xl transition-all shadow mt-2"
               >
-                Save session plan
+                Save club training plan ✓
               </button>
             </form>
 
