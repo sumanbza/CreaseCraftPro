@@ -14,36 +14,36 @@ exports.sendAnnouncementNotification = onDocumentCreated("announcements/{annId}"
   const title = announcement.title || "New Club Announcement";
   const message = announcement.message || "Check the announcements tab for details.";
   const clubId = announcement.clubId;
-  const targetSquadId = announcement.squadId || null; // e.g. squad ID, 'all', or null
+  const targetSquadId = announcement.targetSquadId || announcement.squadId || null; 
 
-  console.log(`Evaluating announcement: clubId=${clubId}, targetSquadId=${targetSquadId}`);
+  console.log(`=== START NOTIFICATION EVALUATION ===`);
+  console.log(`Announcement ID: ${event.params.annId}`);
+  console.log(`Club ID: ${clubId} | Target Squad ID: ${targetSquadId}`);
 
   try {
-    // Fetch all users who have enabled push notifications
     const usersSnapshot = await db.collection("users").where("fcmPushEnabled", "==", true).get();
     const tokens = [];
 
     for (const docSnap of usersSnapshot.docs) {
       const userData = docSnap.data();
       const userId = docSnap.id;
-      if (!userData.fcmToken) continue;
+      const userToken = userData.fcmToken;
+      
+      if (!userToken) continue;
 
       let shouldReceive = false;
 
       if (clubId) {
-        // Fetch user's memberships for this club
         const membershipsSnap = await db.collection("memberships")
           .where("userId", "==", userId)
           .where("clubId", "==", clubId)
           .get();
 
         if (!membershipsSnap.empty) {
-          // User belongs to this club. Now check squad targeting.
-          if (!targetSquadId || targetSquadId === 'all' || targetSquadId === '') {
-            // Condition 1: Entire club announcement -> all club members receive it
-            shouldReceive = true;
+          if (!targetSquadId || targetSquadId.toLowerCase() === 'all' || targetSquadId === '') {
+            shouldReceive = true; // Club-wide broadcast
           } else {
-            // Condition 2: Specific squad announcement -> check if user is in this squad
+            // Specific squad check
             membershipsSnap.forEach(mDoc => {
               const mData = mDoc.data();
               const userSquads = mData.squadIds || [];
@@ -54,25 +54,25 @@ exports.sendAnnouncementNotification = onDocumentCreated("announcements/{annId}"
           }
         }
       } else {
-        // Fallback if announcement has no clubId at all
         shouldReceive = true;
       }
 
-      if (shouldReceive) {
-        tokens.push(userData.fcmToken);
-        console.log(`User ${userId} matched filter. Token included.`);
+      // STRICT ENFORCEMENT: Only push token if shouldReceive is explicitly true
+      if (shouldReceive === true) {
+        tokens.push(userToken);
+        console.log(`[INCLUDE] User ${userId} (${userData.email || 'no email'}) matched. Token added.`);
       } else {
-        console.log(`User ${userId} filtered out.`);
+        console.log(`[EXCLUDE] User ${userId} (${userData.email || 'no email'}) filtered OUT.`);
       }
     }
 
-    if (tokens.length === 0) {
-      console.log("No matching target FCM tokens found after filtering.");
+    const uniqueTokens = [...new Set(tokens)];
+    console.log(`Total unique tokens to send: ${uniqueTokens.length}`);
+
+    if (uniqueTokens.length === 0) {
+      console.log("No matching target FCM tokens found.");
       return null;
     }
-
-    // Deduplicate tokens
-    const uniqueTokens = [...new Set(tokens)];
 
     const payload = {
       notification: {
@@ -83,11 +83,11 @@ exports.sendAnnouncementNotification = onDocumentCreated("announcements/{annId}"
     };
 
     const response = await getMessaging().sendEachForMulticast(payload);
-    console.log("Successfully sent filtered push notifications:", response.successCount);
+    console.log(`Successfully sent push notifications. Success count: ${response.successCount}, Failure count: ${response.failureCount}`);
     
     return null;
   } catch (error) {
-    console.error("Error in filtered push notification function:", error);
+    console.error("Error in push notification function:", error);
     return null;
   }
 });
