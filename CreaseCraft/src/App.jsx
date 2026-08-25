@@ -434,15 +434,35 @@ export default function App() {
     return userMemberships.map(m => {
       const club = clubs.find(c => c.id === m.clubId);
       if (!club) return null;
-      return club;
+
+      const roles = Array.isArray(m.roles) ? m.roles : [m.roles];
+      const hasPrivilege = roles.some(r => {
+        const lower = String(r || '').toLowerCase();
+        return lower.includes('admin') || lower.includes('coach') || lower.includes('head');
+      });
+
+      return hasPrivilege ? club : null;
     }).filter(Boolean);
   }, [userMemberships, clubs]);
 
   const currentUserAssignedSquadIds = useMemo(() => {
-    if (!currentUserMembership) return [];
-    const sIds = currentUserMembership.squadIds;
-    return Array.isArray(sIds) ? sIds : [sIds].filter(Boolean);
-  }, [currentUserMembership]);
+    // If inside a specific club workspace, use that membership's squads
+    if (!isPersonalWorkspace && currentUserMembership) {
+      const sIds = currentUserMembership.squadIds;
+      return Array.isArray(sIds) ? sIds : [sIds].filter(Boolean);
+    }
+    
+    // If in Personal Mode, collect ALL squad IDs across ALL user memberships
+    const allSquads = [];
+    userMemberships.forEach(m => {
+      if (Array.isArray(m.squadIds)) {
+        allSquads.push(...m.squadIds);
+      } else if (m.squadIds) {
+        allSquads.push(m.squadIds);
+      }
+    });
+    return [...new Set(allSquads)]; // Unique list of all squads the user belongs to
+  }, [isPersonalWorkspace, currentUserMembership, userMemberships]);
 
   const unifiedTrainingFeed = useMemo(() => {
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
@@ -510,17 +530,32 @@ export default function App() {
   }, [clubWorkspacePlans, clubPlansPage]);
 
   // Announcements list
-  const unifiedAnnouncements = useMemo(() => {
-    if (isPersonalWorkspace) {
-      const list = [...announcements];
-      list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      return list;
-    } else {
-      const list = announcements.filter(ann => ann.clubId === activeClubId);
-      list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      return list;
-    }
-  }, [isPersonalWorkspace, announcements, activeClubId]);
+ const unifiedAnnouncements = useMemo(() => {
+    // Get all club IDs the user is a member of
+    const userClubIds = userMemberships.map(m => m.clubId);
+
+    let list = announcements.filter(ann => {
+      // If in a specific club management view, restrict to that club
+      if (!isPersonalWorkspace) {
+        return ann.clubId === activeClubId;
+      }
+      
+      // In Personal Mode, only show announcements from clubs the user belongs to
+      return userClubIds.includes(ann.clubId);
+    });
+
+    // Now filter by squad eligibility (Entire Club OR user's assigned squads)
+    list = list.filter(ann => {
+      const target = ann.targetSquadId || ann.squadId;
+      if (!target || target.toUpperCase() === 'ALL' || target === '') {
+        return true; // Club-wide broadcast
+      }
+      return currentUserAssignedSquadIds && currentUserAssignedSquadIds.includes(target);
+    });
+
+    list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return list;
+  }, [isPersonalWorkspace, announcements, activeClubId, userMemberships, currentUserAssignedSquadIds]);
 
   // Unread badge count (announcements created after lastReadAnnouncementTime)
   const unreadAnnouncementsCount = useMemo(() => {
@@ -2121,61 +2156,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="space-y-4">
-              {(() => {
-                const filteredAnnouncements = unifiedAnnouncements.filter(ann => {
-                  const target = ann.targetSquadId || ann.squadId;
-                  if (!target || target.toUpperCase() === 'ALL' || target === '') {
-                    return true;
-                  }
-                  return typeof userSquads !== 'undefined' && userSquads.includes(target);
-                });
-
-                return filteredAnnouncements.length === 0 ? (
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                    No announcements found.
-                  </div>
-                ) : (
-                  filteredAnnouncements.map(ann => {
-                    const parentClub = clubs.find(c => c.id === ann.clubId);
-                    const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : '';
-                    const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
-                    
-                    return (
-                      <div key={ann.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
-                                {isPersonalWorkspace && clubAbbr ? `🏏 ${clubAbbr} — ` : ''}📢 {targetSquadName}
-                              </span>
-                              <h3 className="font-bold text-base text-white">{ann.title}</h3>
-                            </div>
-                            <span className="text-xs text-slate-400 mt-1 block">Posted by <strong className="text-slate-200">{ann.authorName}</strong> | 📅 {ann.createdAt?.split('T')[0]}</span>
-                          </div>
-
-                          {can('broadcast_announcements') && (
-                            <button
-                              onClick={async () => {
-                                await deleteDoc(doc(db, 'announcements', ann.id));
-                                triggerNotify('Announcement deleted.', 'info');
-                              }}
-                              className="bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                            >
-                              Delete Notice
-                            </button>
-                          )}
-                        </div>
-
-                        <p className="text-xs text-slate-200 leading-relaxed bg-slate-950 p-4 rounded-xl border border-slate-800">
-                          {ann.message}
-                        </p>
-                      </div>
-                    );
-                  })
-                );
-              })()}
-            </div>
+        
         {/* TAB 5: ANNOUNCEMENTS & NOTICES */}
         {activeTab === 'announcements' && (
           <div className="space-y-6">
@@ -2203,13 +2184,29 @@ export default function App() {
 
             <div className="space-y-4">
               {(() => {
+				  console.log("DEBUG ANNOUNCEMENTS FEED:", {
+					  unifiedAnnouncements,
+					  currentUserAssignedSquadIds,
+					  isPersonalWorkspace,
+					  userMemberships
+					});
                 const filteredAnnouncements = unifiedAnnouncements.filter(ann => {
-                  const target = ann.targetSquadId || ann.squadId;
-                  if (!target || target.toUpperCase() === 'ALL' || target === '') {
-                    return true;
-                  }
-                  return typeof currentUserAssignedSquadIds !== 'undefined' && currentUserAssignedSquadIds.includes(target);
-                });
+				  const target = ann.targetSquadId || ann.squadId;
+				  
+				  // 1. Club-wide broadcasts are visible to everyone
+				  if (!target || target.toUpperCase() === 'ALL' || target === '') {
+					return true;
+				  }
+				  
+				  // 2. Admins and Coaches should see all squad announcements within their club workspace
+				  // (Check if current user has admin/coach capability or if they are managing the club)
+				  if (!isPersonalWorkspace && can('broadcast_announcements')) {
+					return true;
+				  }
+				  
+				  // 3. Regular players only see it if they belong to that specific squad
+				  return typeof currentUserAssignedSquadIds !== 'undefined' && currentUserAssignedSquadIds.includes(target);
+				});
 
                 return filteredAnnouncements.length === 0 ? (
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
