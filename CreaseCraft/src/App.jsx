@@ -2121,6 +2121,61 @@ export default function App() {
           </div>
         )}
 
+        <div className="space-y-4">
+              {(() => {
+                const filteredAnnouncements = unifiedAnnouncements.filter(ann => {
+                  const target = ann.targetSquadId || ann.squadId;
+                  if (!target || target.toUpperCase() === 'ALL' || target === '') {
+                    return true;
+                  }
+                  return typeof userSquads !== 'undefined' && userSquads.includes(target);
+                });
+
+                return filteredAnnouncements.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+                    No announcements found.
+                  </div>
+                ) : (
+                  filteredAnnouncements.map(ann => {
+                    const parentClub = clubs.find(c => c.id === ann.clubId);
+                    const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : '';
+                    const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
+                    
+                    return (
+                      <div key={ann.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
+                                {isPersonalWorkspace && clubAbbr ? `🏏 ${clubAbbr} — ` : ''}📢 {targetSquadName}
+                              </span>
+                              <h3 className="font-bold text-base text-white">{ann.title}</h3>
+                            </div>
+                            <span className="text-xs text-slate-400 mt-1 block">Posted by <strong className="text-slate-200">{ann.authorName}</strong> | 📅 {ann.createdAt?.split('T')[0]}</span>
+                          </div>
+
+                          {can('broadcast_announcements') && (
+                            <button
+                              onClick={async () => {
+                                await deleteDoc(doc(db, 'announcements', ann.id));
+                                triggerNotify('Announcement deleted.', 'info');
+                              }}
+                              className="bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                            >
+                              Delete Notice
+                            </button>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-slate-200 leading-relaxed bg-slate-950 p-4 rounded-xl border border-slate-800">
+                          {ann.message}
+                        </p>
+                      </div>
+                    );
+                  })
+                );
+              })()}
+            </div>
         {/* TAB 5: ANNOUNCEMENTS & NOTICES */}
         {activeTab === 'announcements' && (
           <div className="space-y-6">
@@ -2147,54 +2202,63 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              {unifiedAnnouncements.length === 0 ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-                  No announcements found.
-                </div>
-              ) : (
-                unifiedAnnouncements.map(ann => {
-                  const parentClub = clubs.find(c => c.id === ann.clubId);
-                  const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : '';
-                  const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
-                  
-                  return (
-                    <div key={ann.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
-                              {isPersonalWorkspace && clubAbbr ? `🏏 ${clubAbbr} — ` : ''}📢 {targetSquadName}
-                            </span>
-                            <h3 className="font-bold text-base text-white">{ann.title}</h3>
+              {(() => {
+                const filteredAnnouncements = unifiedAnnouncements.filter(ann => {
+                  const target = ann.targetSquadId || ann.squadId;
+                  if (!target || target.toUpperCase() === 'ALL' || target === '') {
+                    return true;
+                  }
+                  return typeof currentUserAssignedSquadIds !== 'undefined' && currentUserAssignedSquadIds.includes(target);
+                });
+
+                return filteredAnnouncements.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
+                    No announcements found.
+                  </div>
+                ) : (
+                  filteredAnnouncements.map(ann => {
+                    const parentClub = clubs.find(c => c.id === ann.clubId);
+                    const clubAbbr = parentClub ? (parentClub.abbreviation || parentClub.code) : '';
+                    const targetSquadName = ann.targetSquadId === 'ALL' ? 'Entire Club' : (parentClub?.squads?.find(s => s.id === ann.targetSquadId)?.name || 'Targeted Squad');
+                    
+                    return (
+                      <div key={ann.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded border border-indigo-500/20">
+                                {isPersonalWorkspace && clubAbbr ? `🏏 ${clubAbbr} — ` : ''}📢 {targetSquadName}
+                              </span>
+                              <h3 className="font-bold text-base text-white">{ann.title}</h3>
+                            </div>
+                            <span className="text-xs text-slate-400 mt-1 block">Posted by <strong className="text-slate-200">{ann.authorName}</strong> | 📅 {ann.createdAt?.split('T')[0]}</span>
                           </div>
-                          <span className="text-xs text-slate-400 mt-1 block">Posted by <strong className="text-slate-200">{ann.authorName}</strong> | 📅 {ann.createdAt?.split('T')[0]}</span>
+
+                          {can('broadcast_announcements') && (
+                            <button
+                              onClick={async () => {
+                                await deleteDoc(doc(db, 'announcements', ann.id));
+                                triggerNotify('Announcement deleted.', 'info');
+                              }}
+                              className="bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                            >
+                              Delete Notice
+                            </button>
+                          )}
                         </div>
 
-                        {can('broadcast_announcements') && (
-                          <button
-                            onClick={async () => {
-                              await deleteDoc(doc(db, 'announcements', ann.id));
-                              triggerNotify('Announcement deleted.', 'info');
-                            }}
-                            className="bg-slate-950 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                          >
-                            Delete Notice
-                          </button>
-                        )}
+                        <p className="text-xs text-slate-200 leading-relaxed bg-slate-950 p-4 rounded-xl border border-slate-800">
+                          {ann.message}
+                        </p>
                       </div>
-
-                      <p className="text-xs text-slate-200 leading-relaxed bg-slate-950 p-4 rounded-xl border border-slate-800">
-                        {ann.message}
-                      </p>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                );
+              })()}
             </div>
           </div>
         )}
-
-        {/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
+		{/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
         {!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
           <div className="space-y-6">
             <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
