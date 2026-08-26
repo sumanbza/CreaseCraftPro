@@ -84,7 +84,13 @@ exports.sendAnnouncementNotification = onDocumentCreated("announcements/{annId}"
 
     const response = await getMessaging().sendEachForMulticast(payload);
     console.log(`Successfully sent push notifications. Success count: ${response.successCount}, Failure count: ${response.failureCount}`);
-    
+    if (response.failureCount > 0) {
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          console.error(`Token at index ${idx} failed with error:`, resp.error);
+        }
+      });
+    }
     return null;
   } catch (error) {
     console.error("Error in push notification function:", error);

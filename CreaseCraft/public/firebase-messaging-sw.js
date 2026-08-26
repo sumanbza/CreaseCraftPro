@@ -13,16 +13,4 @@ firebase.initializeApp({
   measurementId: "G-PEPWCDX2WB"
 });
 
-const messaging = firebase.messaging();
-
-// Handle background push notifications when app is closed
-messaging.onBackgroundMessage((payload) => {
-  console.log("Received background push notification payload: ", payload);
-  const notificationTitle = payload.notification.title;
-  const notificationOptions = {
-    body: payload.notification.body,
-    icon: '/favicon.ico'
-  };
-
-  self.registration.showNotification(notificationTitle, notificationOptions);
-});
+firebase.messaging();

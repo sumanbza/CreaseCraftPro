@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { auth, db } from './config/firebase';
+import { getToken } from "firebase/messaging";
+import { messaging } from "./config/firebase"; // Make sure 'messaging' is exported from your config file
 import { 
   collection, 
   onSnapshot, 
@@ -347,29 +349,36 @@ export default function App() {
     triggerNotify('Signed out of CreaseCraft.', 'info');
   };
 
-  const requestPushNotifications = async () => {
-    if (!('Notification' in window)) {
-      triggerNotify('This browser does not support push notifications.', 'info');
-      return;
-    }
-    try {
-      const permission = await Notification.requestPermission();
-      if (permission === 'granted') {
-        setPushPermissionGranted(true);
-        triggerNotify('Push notification permissions granted! ✓', 'success');
-        if (auth?.currentUser) {
-          await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-            fcmPushEnabled: true,
-            updatedAt: new Date().toISOString()
-          });
-        }
-      } else {
-        triggerNotify('Notification permission denied.', 'info');
-      }
-    } catch (err) {
-      console.error("Error requesting push permission:", err);
-    }
-  };
+	  const requestPushNotifications = async () => {
+	  if (!('Notification' in window)) {
+		triggerNotify('This browser does not support push notifications.', 'info');
+		return;
+	  }
+	  try {
+		const permission = await Notification.requestPermission();
+		if (permission === 'granted') {
+		  triggerNotify('Push notification permissions granted! ✓', 'success');
+
+		  // 1. Fetch the actual FCM device token
+		  // Note: If you use a VAPID key in your web config, pass it as the second argument: getToken(messaging, { vapidKey: 'YOUR_VAPID_KEY' })
+		  const currentToken = await getToken(messaging);
+
+		  if (currentToken && auth?.currentUser) {
+			// 2. Save both fcmPushEnabled and the actual fcmToken string to Firestore
+			await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+			  fcmPushEnabled: true,
+			  fcmToken: currentToken,
+			  updatedAt: new Date().toISOString()
+			});
+			console.log("FCM Token saved successfully:", currentToken);
+		  }
+		} else {
+		  triggerNotify('Notification permission denied.', 'info');
+		}
+	  } catch (err) {
+		console.error("Error requesting push permission or token:", err);
+	  }
+	};
 
   const isPersonalWorkspace = activeClubId === 'club-personal';
   
