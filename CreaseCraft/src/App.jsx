@@ -97,6 +97,7 @@ export default function App() {
   const [onboardingTab, setOnboardingTab] = useState('CREATE');
   const [authError, setAuthError] = useState('');
   const [onboardingError, setOnboardingError] = useState('');
+  const [expandedMembers, setExpandedMembers] = useState({});
   const [lastReadAnnouncementTime, setLastReadAnnouncementTime] = useState(() => {
     return localStorage.getItem('last_read_announcements') || '1970-01-01T00:00:00.000Z';
   });
@@ -2265,234 +2266,308 @@ export default function App() {
           </div>
         )}
 		{/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
-        {!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
-          <div className="space-y-6">
-            <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                    CLUB INVITE CODE: <strong className="text-white tracking-widest">{currentClub.code || 'CC2026'}</strong>
-                  </span>
-                </div>
-                <h2 className="text-base font-bold text-white mt-1.5">{currentClub.name} - Member Roster & Dynamic Capability Matrix</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Create custom roles and toggle capabilities to tailor what each role can do.</p>
-              </div>
+{!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
+  <div className="space-y-6">
+    <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
+            CLUB INVITE CODE: <strong className="text-white tracking-widest">{currentClub.code || 'CC2026'}</strong>
+          </span>
+        </div>
+        <h2 className="text-base font-bold text-white mt-1.5">{currentClub.name} - Member Roster & Dynamic Capability Matrix</h2>
+        <p className="text-xs text-slate-400 mt-0.5">Create custom roles and toggle capabilities to tailor what each role can do.</p>
+      </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(currentClub.code || 'CC2026');
-                    triggerNotify('Copied Club Code "' + (currentClub.code || 'CC2026') + '" to clipboard!', 'success');
-                  }}
-                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-2 whitespace-nowrap"
-                >
-                  📋 Copy Invite Code
-                </button>
-              </div>
-            </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(currentClub.code || 'CC2026');
+            triggerNotify('Copied Club Code "' + (currentClub.code || 'CC2026') + '" to clipboard!', 'success');
+          }}
+          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-2 whitespace-nowrap"
+        >
+          📋 Copy Invite Code
+        </button>
+      </div>
+    </div>
 
-            {/* DYNAMIC CAPABILITY MATRIX ROLE BUILDER */}
-            {can('configure_roles') && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="border-b border-slate-800 pb-3">
-                  <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-                    🛠️ Dynamic Role Builder & Capability Matrix
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Create a new custom role and assign precise feature capabilities.</p>
-                </div>
+    {/* DYNAMIC CAPABILITY MATRIX ROLE BUILDER */}
+    {can('configure_roles') && (
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+        
+        {/* Section Header & New Role Form */}
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-800 pb-5">
+          <div>
+            <h3 className="font-extrabold text-sm text-slate-100 flex items-center gap-2">
+              🛠️ Dynamic Role Builder & Capability Matrix
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Create custom roles and toggle capabilities directly on each role card below.
+            </p>
+          </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] text-slate-400 font-bold uppercase block">New Role Name</label>
-                    <input
-                      type="text"
-                      value={newRoleName}
-                      onChange={(e) => setNewRoleName(e.target.value)}
-                      placeholder="e.g. Assistant S&C Coach"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!newRoleName.trim()) return;
-                        const roleObj = { name: newRoleName.trim(), capabilities: selectedCapabilities };
-                        const clubRef = doc(db, 'clubs', activeClubId);
-                        const existingRoles = Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [];
-                        await updateDoc(clubRef, {
-                          customRoles: [...existingRoles, roleObj]
-                        });
-                        setNewRoleName('');
-                        setSelectedCapabilities([]);
-                        triggerNotify(`Created custom role "${roleObj.name}" with ${roleObj.capabilities.length} capabilities!`, 'success');
-                      }}
-                      className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition-all shadow"
-                    >
-                      + Save Custom Role to Club
-                    </button>
+          <div className="flex items-center gap-2 w-full lg:w-auto">
+            <input
+              type="text"
+              value={newRoleName}
+              onChange={(e) => setNewRoleName(e.target.value)}
+              placeholder="New Role Name (e.g. S&C Coach)"
+              className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 w-full sm:w-60"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                if (!newRoleName.trim()) return;
+                const roleObj = { name: newRoleName.trim(), capabilities: [] };
+                const clubRef = doc(db, 'clubs', activeClubId);
+                const existingRoles = Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [];
+                await updateDoc(clubRef, {
+                  customRoles: [...existingRoles, roleObj]
+                });
+                setNewRoleName('');
+                triggerNotify(`Created custom role "${roleObj.name}"! Now assign capabilities below.`, 'success');
+              }}
+              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2 rounded-xl transition-all shadow whitespace-nowrap"
+            >
+              + Create Role
+            </button>
+          </div>
+        </div>
+
+        {/* ACTIVE CLUB ROLES & INTERACTIVE PERMISSION CARDS */}
+        <div className="space-y-3">
+          <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
+            Active Club Roles & Full Capability Audit Matrix
+          </span>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {(Array.isArray(currentClub.customRoles) ? currentClub.customRoles : []).map((rDef, index) => {
+              const isProtectedRole = rDef.name === 'Admin' || rDef.name === 'Player';
+              const isAdminRole = rDef.name === 'Admin';
+
+              return (
+                <div key={index} className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
+                  
+                  {/* Role Card Header */}
+                  <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-extrabold text-sm text-white">🏷️ {rDef.name}</h4>
+                        {isProtectedRole && (
+                          <span className="text-[9px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20 font-bold">
+                            System Role
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {isAdminRole ? 'Full system administrator access (*)' : `${Array.isArray(rDef.capabilities) ? rDef.capabilities.length : 0} of ${MASTER_CAPABILITIES_CATALOGUE.length} capabilities assigned`}
+                      </p>
+                    </div>
+
+                    {!isProtectedRole && (
+                      <button
+                        onClick={async () => {
+                          const clubRef = doc(db, 'clubs', activeClubId);
+                          const updated = currentClub.customRoles.filter(r => r.name !== rDef.name);
+                          await updateDoc(clubRef, { customRoles: updated });
+                          triggerNotify(`Removed role "${rDef.name}"`, 'info');
+                        }}
+                        className="text-slate-500 hover:text-rose-400 font-bold text-xs bg-slate-900 px-2.5 py-1.5 rounded-xl border border-slate-800 transition-all"
+                      >
+                        🗑️ Delete
+                      </button>
+                    )}
                   </div>
 
-                  <div className="md:col-span-2 space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <label className="text-[10px] text-emerald-400 font-extrabold uppercase block mb-2">
-                      Select Capabilities for this Role
-                    </label>
+                  {/* Full Capability Toggle Grid */}
+                  <div className="space-y-2">
+                    <span className="text-[10px] text-slate-400 uppercase font-bold block">
+                      {isAdminRole ? 'All Permissions Enabled' : 'Click capability chips to toggle permissions:'}
+                    </span>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                       {MASTER_CAPABILITIES_CATALOGUE.map(cap => {
-                        const isSelected = selectedCapabilities.includes(cap.key);
+                        const hasCap = isAdminRole || (Array.isArray(rDef.capabilities) && rDef.capabilities.includes(cap.key));
+
                         return (
                           <button
                             key={cap.key}
                             type="button"
-                            onClick={() => {
-                              setSelectedCapabilities(prev => 
-                                isSelected ? prev.filter(k => k !== cap.key) : [...prev, cap.key]
-                              );
+                            disabled={isAdminRole}
+                            onClick={async () => {
+                              if (isAdminRole) return;
+
+                              const currentCaps = Array.isArray(rDef.capabilities) ? rDef.capabilities : [];
+                              let newCaps;
+                              if (hasCap) {
+                                newCaps = currentCaps.filter(c => c !== cap.key);
+                              } else {
+                                newCaps = [...currentCaps, cap.key];
+                              }
+
+                              const updatedRoles = currentClub.customRoles.map(r => r.name === rDef.name ? { ...r, capabilities: newCaps } : r);
+                              const clubRef = doc(db, 'clubs', activeClubId);
+                              await updateDoc(clubRef, { customRoles: updatedRoles });
+                              triggerNotify(`Updated capabilities for "${rDef.name}" ✓`, 'success');
                             }}
                             className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all ${
-                              isSelected ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold' : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+                              isAdminRole 
+                                ? 'bg-emerald-500/10 text-emerald-300/80 border-emerald-500/30 cursor-default' 
+                                : hasCap 
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow' 
+                                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700'
                             }`}
                           >
-                            <span className="truncate">{cap.label}</span>
-                            <span className="text-xs">{isSelected ? '✓' : '+'}</span>
+                            <span className="truncate pr-2">{cap.label}</span>
+                            <span className="text-xs font-mono font-bold">{hasCap ? '✓' : '+'}</span>
                           </button>
                         );
                       })}
                     </div>
                   </div>
-                </div>
 
-                {/* EXISTING ROLES SUMMARY */}
-                <div className="pt-3 border-t border-slate-800">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase block mb-2">Active Club Roles & Capabilities</span>
-                  <div className="flex flex-wrap gap-2">
-                    {(Array.isArray(currentClub.customRoles) ? currentClub.customRoles : []).map((rDef, i) => (
-                      <div key={i} className="bg-slate-950 border border-slate-800 p-3 rounded-xl text-xs space-y-1 w-full sm:w-auto">
-                        <div className="flex justify-between items-center gap-3">
-                          <span className="font-extrabold text-white">🏷️ {rDef.name}</span>
-                          {rDef.name !== 'Admin' && rDef.name !== 'Player' && (
-                            <button
-                              onClick={async () => {
-                                const clubRef = doc(db, 'clubs', activeClubId);
-                                const updated = (currentClub.customRoles || []).filter(r => r.name !== rDef.name);
-                                await updateDoc(clubRef, { customRoles: updated });
-                                triggerNotify(`Removed role ${rDef.name}`, 'info');
-                              }}
-                              className="text-slate-500 hover:text-rose-400 font-bold"
-                            >
-                              ✕
-                            </button>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-slate-400 max-w-xs truncate">
-                          Capabilities: {Array.isArray(rDef.capabilities) && rDef.capabilities.includes('*') ? 'Full Admin (*)' : (Array.isArray(rDef.capabilities) ? rDef.capabilities.join(', ') : 'None')}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })}
+          </div>
+        </div>
 
-            {/* SQUAD & ROSTER MANAGEMENT */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                <div>
-                  <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-                    🏟️ Club Squad & Age Group Management
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Create and manage sub-teams (e.g. 1st XI Senior, Under-19 Academy) for {currentClub.name}.</p>
-                </div>
-              </div>
+      </div>
+    )}
 
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  id="custom-squad-input"
-                  placeholder="e.g. 3rd XI League, Under-15 Academy"
-                  className="flex-grow bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
-                />
+    {/* SQUAD & ROSTER MANAGEMENT */}
+    <div className="space-y-6">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+              🏟️ Club Squad & Age Group Management
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">Create and manage sub-teams (e.g. 1st XI Senior, Under-19 Academy) for {currentClub.name}.</p>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            id="custom-squad-input"
+            placeholder="e.g. 3rd XI League, Under-15 Academy"
+            className="flex-grow bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+          />
+          <button
+            onClick={async () => {
+              const input = document.getElementById('custom-squad-input');
+              if (!input || !input.value.trim()) return;
+              const squadName = input.value.trim();
+              const newSquadObj = {
+                id: 'squad-' + Date.now(),
+                name: squadName
+              };
+              const clubRef = doc(db, 'clubs', activeClubId);
+              await updateDoc(clubRef, {
+                squads: [...(currentClub.squads || []), newSquadObj]
+              });
+              input.value = '';
+              triggerNotify('Created squad "' + squadName + '" in Firestore!', 'success');
+            }}
+            className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 font-bold border border-emerald-500/40 text-xs px-4 py-2.5 rounded-xl transition-all whitespace-nowrap"
+          >
+            + Create Squad
+          </button>
+        </div>
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          {(currentClub.squads || []).map((sq) => (
+            <span key={sq.id} className="bg-slate-950 text-slate-300 border border-slate-800 text-xs px-3 py-1 rounded-xl flex items-center gap-2 font-semibold">
+              <span className="text-emerald-400">🏏</span> {sq.name}
+              {(currentClub.squads || []).length > 1 && (
                 <button
                   onClick={async () => {
-                    const input = document.getElementById('custom-squad-input');
-                    if (!input || !input.value.trim()) return;
-                    const squadName = input.value.trim();
-                    const newSquadObj = {
-                      id: 'squad-' + Date.now(),
-                      name: squadName
-                    };
                     const clubRef = doc(db, 'clubs', activeClubId);
-                    await updateDoc(clubRef, {
-                      squads: [...(currentClub.squads || []), newSquadObj]
-                    });
-                    input.value = '';
-                    triggerNotify('Created squad "' + squadName + '" in Firestore!', 'success');
+                    const updatedSquads = (currentClub.squads || []).filter(s => s.id !== sq.id);
+                    await updateDoc(clubRef, { squads: updatedSquads });
+                    triggerNotify('Removed squad "' + sq.name + '".', 'info');
                   }}
-                  className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 font-bold border border-emerald-500/40 text-xs px-4 py-2.5 rounded-xl transition-all whitespace-nowrap"
+                  className="text-slate-500 hover:text-rose-400 text-xs font-bold"
                 >
-                  + Create Squad
+                  ✕
                 </button>
-              </div>
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
 
-              <div className="flex flex-wrap gap-2 pt-1">
-                {(currentClub.squads || []).map((sq) => (
-                  <span key={sq.id} className="bg-slate-950 text-slate-300 border border-slate-800 text-xs px-3 py-1 rounded-xl flex items-center gap-2 font-semibold">
-                    <span className="text-emerald-400">🏏</span> {sq.name}
-                    {(currentClub.squads || []).length > 1 && (
-                      <button
-                        onClick={async () => {
-                          const clubRef = doc(db, 'clubs', activeClubId);
-                          const updatedSquads = (currentClub.squads || []).filter(s => s.id !== sq.id);
-                          await updateDoc(clubRef, { squads: updatedSquads });
-                          triggerNotify('Removed squad "' + sq.name + '".', 'info');
-                        }}
-                        className="text-slate-500 hover:text-rose-400 text-xs font-bold"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </span>
-                ))}
-              </div>
-            </div>
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
+          <div>
+            <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+              👥 Active Club Roster ({memberships.filter(m => m.clubId === activeClubId).length} Members)
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">Sorted alphabetically. Click to expand controls for roles and squads.</p>
+          </div>
+        </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <div className="border-b border-slate-800 pb-3">
-                <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-                  👥 Active Club Roster ({memberships.filter(m => m.clubId === activeClubId).length} Members)
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Assign multiple roles and multiple squads to registered club members.</p>
-              </div>
+        <div className="space-y-3">
+          {memberships
+            .filter(m => m.clubId === activeClubId)
+            .slice()
+            .sort((a, b) => {
+              const nameA = resolveMemberFullName(a.userId) || '';
+              const nameB = resolveMemberFullName(b.userId) || '';
+              return nameA.localeCompare(nameB);
+            })
+            .map(m => {
+              const displayName = resolveMemberFullName(m.userId);
+              const isExpanded = expandedMembers[m.id] ?? false;
+              
+              const currentRoles = Array.isArray(m.roles) ? m.roles : [m.roles || 'Player'];
+              const currentSquadIds = Array.isArray(m.squadIds) ? m.squadIds : [m.squadIds || ''];
 
-              <div className="space-y-3">
-                {memberships.filter(m => m.clubId === activeClubId).map(m => {
-                  const displayName = resolveMemberFullName(m.userId);
+              const availableRoleNames = (Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [
+                { name: 'Admin' },
+                { name: 'Player' },
+                { name: 'Head Coach' }
+              ]).map(r => r.name);
+
+              const availableSquads = currentClub.squads || [];
+
+              return (
+                <div key={m.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-4 transition-all">
                   
-                  const currentRoles = Array.isArray(m.roles) ? m.roles : [m.roles || 'Player'];
-                  const currentSquadIds = Array.isArray(m.squadIds) ? m.squadIds : [m.squadIds || ''];
-
-                  const availableRoleNames = (Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [
-                    { name: 'Admin' },
-                    { name: 'Player' },
-                    { name: 'Head Coach' }
-                  ]).map(r => r.name);
-
-                  const availableSquads = currentClub.squads || [];
-
-                  return (
-                    <div key={m.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-extrabold text-sm text-white">{displayName}</span>
-                          {currentRoles.map((r, i) => (
-                            <span key={i} className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] px-2 py-0.5 rounded font-bold">
-                              {r}
-                            </span>
-                          ))}
-                        </div>
-                        <span className="text-[11px] text-slate-400 mt-0.5 block">
-                          ID: <span className="text-slate-300 font-mono">{m.userId}</span>
-                        </span>
+                  {/* Collapsible Header */}
+                  <div 
+                    className="flex justify-between items-center cursor-pointer select-none"
+                    onClick={() => {
+                      setExpandedMembers(prev => ({ ...prev, [m.id]: !isExpanded }));
+                    }}
+                  >
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-sm text-white">{displayName}</span>
+                        {currentRoles.map((r, i) => (
+                          <span key={i} className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] px-2 py-0.5 rounded font-bold">
+                            {r}
+                          </span>
+                        ))}
                       </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                        {m.email || 'Email: N/A'}
+                      </p>
+                    </div>
 
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-indigo-400 bg-indigo-500/10 px-3 py-1.5 rounded-xl border border-indigo-500/20 font-bold transition-all hover:bg-indigo-500/20">
+                        {isExpanded ? '▲ Collapse' : '▼ Expand Controls'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Collapsible Content Body */}
+                  {isExpanded && (
+                    <div className="border-t border-slate-800/80 pt-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs animate-fadeIn">
+                      
                       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto">
                         
                         {/* MULTI-ROLE CHECKBOXES / SELECTOR */}
@@ -2564,28 +2639,34 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* REMOVE MEMBER */}
-                        <button
-                          onClick={async () => {
-                            const memRef = doc(db, 'memberships', m.id);
-                            await deleteDoc(memRef);
-                            triggerNotify('Removed member from club roster.', 'info');
-                          }}
-                          className="bg-slate-900 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold transition-all text-xs whitespace-nowrap"
-                        >
-                          Remove
-                        </button>
                       </div>
+
+                      {/* REMOVE MEMBER */}
+                      <button
+                        onClick={async () => {
+                          const memRef = doc(db, 'memberships', m.id);
+                          await deleteDoc(memRef);
+                          triggerNotify('Removed member from club roster.', 'info');
+                        }}
+                        className="bg-slate-900 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold transition-all text-xs whitespace-nowrap self-end lg:self-center"
+                      >
+                        Remove Member
+                      </button>
+
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  )}
 
-          </div>
-        )}
+                </div>
+              );
+            })}
+        </div>
+      </div>
+    </div>
 
-      </main>
+  </div>
+)}
+					
+	</main>
 
       {/* MODAL: CREATE PLAN */}
       {showCreatePlanModal && (
