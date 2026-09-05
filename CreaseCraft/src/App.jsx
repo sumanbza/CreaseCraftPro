@@ -98,6 +98,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [onboardingError, setOnboardingError] = useState('');
   const [expandedMembers, setExpandedMembers] = useState({});
+  const [expandedRoles, setExpandedRoles] = useState({});
   const [lastReadAnnouncementTime, setLastReadAnnouncementTime] = useState(() => {
     return localStorage.getItem('last_read_announcements') || '1970-01-01T00:00:00.000Z';
   });
@@ -2265,7 +2266,8 @@ export default function App() {
             </div>
           </div>
         )}
-		{/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
+
+{/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
 {!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
   <div className="space-y-6">
     <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2292,11 +2294,10 @@ export default function App() {
       </div>
     </div>
 
-    {/* DYNAMIC CAPABILITY MATRIX ROLE BUILDER */}
+    {/* DYNAMIC CAPABILITY MATRIX ROLE BUILDER (ALPHABETICAL STACKED CARDS) */}
     {can('configure_roles') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
         
-        {/* Section Header & New Role Form */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-800 pb-5">
           <div>
             <h3 className="font-extrabold text-sm text-slate-100 flex items-center gap-2">
@@ -2335,101 +2336,118 @@ export default function App() {
           </div>
         </div>
 
-        {/* ACTIVE CLUB ROLES & INTERACTIVE PERMISSION CARDS */}
         <div className="space-y-3">
           <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block">
-            Active Club Roles & Full Capability Audit Matrix
+            Active Club Roles & Full Capability Audit Matrix (Alphabetical Order)
           </span>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {(Array.isArray(currentClub.customRoles) ? currentClub.customRoles : []).map((rDef, index) => {
-              const isProtectedRole = rDef.name === 'Admin' || rDef.name === 'Player';
-              const isAdminRole = rDef.name === 'Admin';
+          <div className="space-y-3">
+            {(Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [])
+              .slice()
+              .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+              .map((rDef, index) => {
+                const isProtectedRole = rDef.name === 'Admin' || rDef.name === 'Player';
+                const isAdminRole = rDef.name === 'Admin';
+                const isRoleExpanded = expandedRoles[rDef.name] ?? false;
 
-              return (
-                <div key={index} className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
-                  
-                  {/* Role Card Header */}
-                  <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-extrabold text-sm text-white">🏷️ {rDef.name}</h4>
-                        {isProtectedRole && (
-                          <span className="text-[9px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20 font-bold">
-                            System Role
-                          </span>
+                return (
+                  <div key={index} className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg transition-all">
+                    
+                    {/* Role Header (Click to Toggle Collapse) */}
+                    <div 
+                      className="flex justify-between items-center cursor-pointer select-none"
+                      onClick={() => {
+                        setExpandedRoles(prev => ({ ...prev, [rDef.name]: !isRoleExpanded }));
+                      }}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-extrabold text-sm text-white">🏷️ {rDef.name}</h4>
+                          {isProtectedRole && (
+                            <span className="text-[9px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20 font-bold">
+                              System Role
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {isAdminRole ? 'Full system administrator access (*)' : `${Array.isArray(rDef.capabilities) ? rDef.capabilities.length : 0} of ${MASTER_CAPABILITIES_CATALOGUE.length} capabilities assigned`}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-indigo-400 bg-indigo-500/10 px-3 py-1.5 rounded-xl border border-indigo-500/20 font-bold transition-all hover:bg-indigo-500/20">
+                          {isRoleExpanded ? '▲ Collapse Matrix' : '▼ Expand Matrix'}
+                        </span>
+
+                        {!isProtectedRole && (
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const clubRef = doc(db, 'clubs', activeClubId);
+                              const updated = currentClub.customRoles.filter(r => r.name !== rDef.name);
+                              await updateDoc(clubRef, { customRoles: updated });
+                              triggerNotify(`Removed role "${rDef.name}"`, 'info');
+                            }}
+                            className="text-slate-500 hover:text-rose-400 font-bold text-xs bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800 transition-all"
+                          >
+                            🗑️ Delete
+                          </button>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {isAdminRole ? 'Full system administrator access (*)' : `${Array.isArray(rDef.capabilities) ? rDef.capabilities.length : 0} of ${MASTER_CAPABILITIES_CATALOGUE.length} capabilities assigned`}
-                      </p>
                     </div>
 
-                    {!isProtectedRole && (
-                      <button
-                        onClick={async () => {
-                          const clubRef = doc(db, 'clubs', activeClubId);
-                          const updated = currentClub.customRoles.filter(r => r.name !== rDef.name);
-                          await updateDoc(clubRef, { customRoles: updated });
-                          triggerNotify(`Removed role "${rDef.name}"`, 'info');
-                        }}
-                        className="text-slate-500 hover:text-rose-400 font-bold text-xs bg-slate-900 px-2.5 py-1.5 rounded-xl border border-slate-800 transition-all"
-                      >
-                        🗑️ Delete
-                      </button>
+                    {/* Collapsible Capability Grid */}
+                    {isRoleExpanded && (
+                      <div className="border-t border-slate-800/80 pt-4 space-y-3 animate-fadeIn">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold block">
+                          {isAdminRole ? 'All Permissions Enabled' : 'Click capability chips to toggle permissions:'}
+                        </span>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                          {MASTER_CAPABILITIES_CATALOGUE.map(cap => {
+                            const hasCap = isAdminRole || (Array.isArray(rDef.capabilities) && rDef.capabilities.includes(cap.key));
+
+                            return (
+                              <button
+                                key={cap.key}
+                                type="button"
+                                disabled={isAdminRole}
+                                onClick={async () => {
+                                  if (isAdminRole) return;
+
+                                  const currentCaps = Array.isArray(rDef.capabilities) ? rDef.capabilities : [];
+                                  let newCaps;
+                                  if (hasCap) {
+                                    newCaps = currentCaps.filter(c => c !== cap.key);
+                                  } else {
+                                    newCaps = [...currentCaps, cap.key];
+                                  }
+
+                                  const updatedRoles = currentClub.customRoles.map(r => r.name === rDef.name ? { ...r, capabilities: newCaps } : r);
+                                  const clubRef = doc(db, 'clubs', activeClubId);
+                                  await updateDoc(clubRef, { customRoles: updatedRoles });
+                                  triggerNotify(`Updated capabilities for "${rDef.name}" ✓`, 'success');
+                                }}
+                                className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all ${
+                                  isAdminRole 
+                                    ? 'bg-emerald-500/10 text-emerald-300/80 border-emerald-500/30 cursor-default' 
+                                    : hasCap 
+                                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow' 
+                                      : 'bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                <span className="truncate pr-2">{cap.label}</span>
+                                <span className="text-xs font-mono font-bold">{hasCap ? '✓' : '+'}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )}
+
                   </div>
-
-                  {/* Full Capability Toggle Grid */}
-                  <div className="space-y-2">
-                    <span className="text-[10px] text-slate-400 uppercase font-bold block">
-                      {isAdminRole ? 'All Permissions Enabled' : 'Click capability chips to toggle permissions:'}
-                    </span>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                      {MASTER_CAPABILITIES_CATALOGUE.map(cap => {
-                        const hasCap = isAdminRole || (Array.isArray(rDef.capabilities) && rDef.capabilities.includes(cap.key));
-
-                        return (
-                          <button
-                            key={cap.key}
-                            type="button"
-                            disabled={isAdminRole}
-                            onClick={async () => {
-                              if (isAdminRole) return;
-
-                              const currentCaps = Array.isArray(rDef.capabilities) ? rDef.capabilities : [];
-                              let newCaps;
-                              if (hasCap) {
-                                newCaps = currentCaps.filter(c => c !== cap.key);
-                              } else {
-                                newCaps = [...currentCaps, cap.key];
-                              }
-
-                              const updatedRoles = currentClub.customRoles.map(r => r.name === rDef.name ? { ...r, capabilities: newCaps } : r);
-                              const clubRef = doc(db, 'clubs', activeClubId);
-                              await updateDoc(clubRef, { customRoles: updatedRoles });
-                              triggerNotify(`Updated capabilities for "${rDef.name}" ✓`, 'success');
-                            }}
-                            className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all ${
-                              isAdminRole 
-                                ? 'bg-emerald-500/10 text-emerald-300/80 border-emerald-500/30 cursor-default' 
-                                : hasCap 
-                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow' 
-                                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700'
-                            }`}
-                          >
-                            <span className="truncate pr-2">{cap.label}</span>
-                            <span className="text-xs font-mono font-bold">{hasCap ? '✓' : '+'}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                </div>
-              );
-            })}
+                );
+              })}
           </div>
         </div>
 
@@ -2536,7 +2554,6 @@ export default function App() {
               return (
                 <div key={m.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-4 transition-all">
                   
-                  {/* Collapsible Header */}
                   <div 
                     className="flex justify-between items-center cursor-pointer select-none"
                     onClick={() => {
@@ -2564,13 +2581,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Collapsible Content Body */}
                   {isExpanded && (
-                    <div className="border-t border-slate-800/80 pt-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs animate-fadeIn">
+                    <div className="border-t border-slate-800/80 pt-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs">
                       
                       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto">
                         
-                        {/* MULTI-ROLE CHECKBOXES / SELECTOR */}
                         <div className="flex flex-col space-y-1 w-full sm:w-auto">
                           <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Roles (Multi-select)</span>
                           <div className="flex flex-wrap gap-1.5 max-w-xs">
@@ -2605,7 +2620,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* MULTI-SQUAD CHECKBOXES / SELECTOR */}
                         <div className="flex flex-col space-y-1 w-full sm:w-auto">
                           <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Squads (Multi-select)</span>
                           <div className="flex flex-wrap gap-1.5 max-w-xs">
@@ -2641,7 +2655,6 @@ export default function App() {
 
                       </div>
 
-                      {/* REMOVE MEMBER */}
                       <button
                         onClick={async () => {
                           const memRef = doc(db, 'memberships', m.id);
