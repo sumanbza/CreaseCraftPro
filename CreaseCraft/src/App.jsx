@@ -1045,21 +1045,24 @@ export default function App() {
       
       {/* TOP NAVIGATION BAR */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col sm:flex-row justify-between items-center gap-3">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col lg:flex-row justify-between items-center gap-3">
           
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-lime-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <IconActivity />
-            </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-emerald-400 bg-clip-text text-transparent">
-                CREASECRAFT PRO
-              </span>
-              <p className="text-[10px] text-slate-400">Enterprise Club & Personal Athlete Suite</p>
+          <div className="flex items-center gap-3 w-full lg:w-auto justify-between lg:justify-start">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-lime-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                <IconActivity />
+              </div>
+              <div>
+                <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-emerald-400 bg-clip-text text-transparent">
+                  CREASECRAFT PRO
+                </span>
+                <p className="text-[10px] text-slate-400">Enterprise Club & Personal Athlete Suite</p>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Right actions container with flex-wrap enabled for mobile screens */}
+          <div className="flex flex-wrap items-center justify-center lg:justify-end gap-2.5 w-full lg:w-auto">
             
             {userAdminOrCoachClubs.length > 0 && (
               <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
@@ -1090,14 +1093,14 @@ export default function App() {
                 setShowClubOnboardingModal(true);
                 setOnboardingError('');
               }}
-              className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 font-bold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
+              className="bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
             >
-              <IconPlus /> Manage / Join Club
+              <IconPlus /> Create / Join Club
             </button>
 
             <button
               onClick={requestPushNotifications}
-              className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 font-bold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
+              className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs shadow"
             >
               🔔 Enable Push
             </button>
