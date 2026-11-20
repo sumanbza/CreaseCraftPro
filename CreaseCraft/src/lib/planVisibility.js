@@ -3,13 +3,12 @@
 //
 // A plan's first time slot holds net lanes (players named as batters/bowlers)
 // and activity zones (each optionally assigned to squads).
-//   * A zone assigned to squads is "mine" if I am in one of those squads.
-//   * A lane that names players is "mine" if I am named in it.
-//   * Zones and lanes with nobody assigned are shared with everyone who sees
-//     the session.
-//   * A plan with no assignments at all is an open club session.
-//   * Otherwise I see the plan only if at least one zone or lane is mine,
-//     and then only my zones/lanes plus the shared ones.
+//   * A zone is shown to me only if it is assigned to one of my squads.
+//   * A net lane is shown to me only if it names me as a batter or bowler.
+//   * Zones and lanes assigned to nobody are shown to nobody.
+//   * I see the session only if at least one zone or lane is mine, so a plan
+//     with no assignments at all appears in no member's Training Planner.
+// The full plan is always available in the Club Training Planner.
 
 // "Pat Cummins (36b)" -> "pat cummins"
 export const normaliseName = (n) =>
@@ -28,17 +27,13 @@ export function getMyPartOfPlan(plan, { squadIds = [], name = '' } = {}) {
   const zoneAssigned = (z) => Array.isArray(z.squadIds) && z.squadIds.length > 0;
   const zoneIsMine = (z) => zoneAssigned(z) && z.squadIds.some(id => mySquads.has(id));
   const laneNames = (l) => [...namesIn(l.batters), ...namesIn(l.bowlersText)];
-  const laneAssigned = (l) => laneNames(l).length > 0;
   const laneIsMine = (l) => !!myName && laneNames(l).includes(myName);
 
-  const hasAssignments = zones.some(zoneAssigned) || lanes.some(laneAssigned);
-  const hasMine = zones.some(zoneIsMine) || lanes.some(laneIsMine);
-
-  const myZones = zones.filter(z => !zoneAssigned(z) || zoneIsMine(z));
-  const myLanes = lanes.filter(l => !laneAssigned(l) || laneIsMine(l));
+  const myZones = zones.filter(zoneIsMine);
+  const myLanes = lanes.filter(laneIsMine);
 
   return {
-    visible: !hasAssignments || hasMine,
+    visible: myZones.length > 0 || myLanes.length > 0,
     zones: myZones,
     lanes: myLanes,
     hiddenCount: (zones.length - myZones.length) + (lanes.length - myLanes.length),

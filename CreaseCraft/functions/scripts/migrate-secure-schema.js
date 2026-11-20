@@ -17,7 +17,8 @@
  *   node scripts/migrate-secure-schema.js --apply
  *
  * Set GCLOUD_PROJECT to target another project (default: creasecraft-23140).
- * Keep computeCapabilities in step with src/lib/capabilities.js.
+ * Keep computeCapabilities in step with src/lib/capabilities.js: access comes
+ * only from each club's role definitions, never from role names.
  */
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
@@ -28,14 +29,8 @@ const projectId = process.env.GCLOUD_PROJECT || 'creasecraft-23140';
 initializeApp({ projectId });
 const db = getFirestore();
 
-const isPrivilegedRoleName = (name) => {
-  const lower = String(name || '').toLowerCase();
-  return lower.includes('admin') || lower.includes('coach') || lower.includes('head');
-};
-
 function computeCapabilities(roles, customRoles) {
   const roleList = (Array.isArray(roles) ? roles : [roles]).filter(Boolean);
-  if (roleList.some(isPrivilegedRoleName)) return ['*'];
   const defs = Array.isArray(customRoles) ? customRoles : [];
   const caps = new Set();
   for (const roleName of roleList) {
@@ -97,7 +92,7 @@ async function main() {
       discipline: (users.get(userId) || {}).discipline || docs.find(m => m.discipline)?.discipline || '',
       createdAt: docs.map(m => m.createdAt).filter(Boolean).sort()[0] || new Date().toISOString(),
     };
-    if (merged.roles.some(r => String(r).toLowerCase().includes('admin'))) {
+    if (merged.caps.includes('*')) {
       if (!adminByClub.has(clubId) || merged.createdAt < adminByClub.get(clubId).createdAt) {
         adminByClub.set(clubId, merged);
       }
@@ -118,6 +113,11 @@ async function main() {
 
   // ---- clubs: createdBy + invite codes -------------------------------------
   for (const [clubId, club] of clubs) {
+    if (!adminByClub.has(clubId)) {
+      problems.push(`club ${clubId} (${club.name}): no member holds a role with all permissions (*), `
+        + 'so nobody could manage it. In Firestore, make sure clubs/' + clubId + '.customRoles has a role with '
+        + 'capabilities ["*"] (e.g. Admin) and that a member has it, then re-run this script.');
+    }
     if (!club.createdBy) {
       const founder = adminByClub.get(clubId);
       if (founder) {
@@ -125,8 +125,6 @@ async function main() {
           describe: `club ${clubId} (${club.name}): createdBy=${founder.userId}`,
           run: (batch) => batch.update(db.doc(`clubs/${clubId}`), { createdBy: founder.userId }),
         });
-      } else {
-        problems.push(`club ${clubId} (${club.name}) has no Admin member; createdBy not set`);
       }
     }
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { auth, db } from './config/firebase';
 import { getToken } from "firebase/messaging";
 import { messaging } from "./config/firebase"; // Make sure 'messaging' is exported from your config file
@@ -15,7 +15,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { useLiveQueries } from './hooks/useLiveQueries';
-import { computeCapabilities, sameCaps, membershipId, JOIN_CAPS } from './lib/capabilities';
+import { computeCapabilities, sameCaps, membershipId, JOIN_CAPS, hasCap, hasAnyCap, CLUB_VIEW_CAPS, PLANNER_CAPS, ROSTER_TAB_CAPS } from './lib/capabilities';
 import { getMyPartOfPlan } from './lib/planVisibility';
 import { 
   createUserWithEmailAndPassword, 
@@ -195,9 +195,13 @@ export default function App() {
     return localISODate(d);
   };
 
+  // Each message stays for 3.5s; a newer message restarts the timer so an
+  // older timer can't clear it early.
+  const notifyTimerRef = useRef(null);
   const triggerNotify = (msg, type = 'info') => {
     setNotification({ msg, type });
-    setTimeout(() => setNotification(null), 3500);
+    clearTimeout(notifyTimerRef.current);
+    notifyTimerRef.current = setTimeout(() => setNotification(null), 3500);
   };
 
   useEffect(() => {
@@ -271,8 +275,8 @@ export default function App() {
   const clubSpecs = [];
   for (const m of myMembershipDocs) {
     const clubId = m.clubId;
-    // Wait until the server has the membership, or the club reads are denied.
-    if (!clubId || m._pendingWrite) continue;
+    // Wait until the server has a new membership, or the club reads are denied.
+    if (!clubId || m._unconfirmed) continue;
     const byClub = (name) => query(collection(db, name), where('clubId', '==', clubId));
     clubSpecs.push(
       { key: `club:${clubId}`, collection: 'clubs', ref: doc(db, 'clubs', clubId), isDoc: true },
@@ -427,32 +431,32 @@ export default function App() {
     return memberships.find(m => m.clubId === activeClubId && (m.userId === activeUid || m.userId === userProfile?.uid));
   }, [memberships, activeClubId, currentHuman, userProfile, isPersonalWorkspace]);
 
+  // My capabilities in each club I belong to, from that club's permissions
+  // matrix (role definitions). Role names never grant access by themselves.
+  const myClubCaps = useMemo(() => {
+    const uid = signedInUid || userProfile?.uid;
+    const out = {};
+    for (const m of memberships) {
+      if (m.userId !== uid || !m.clubId) continue;
+      const club = clubs.find(c => c.id === m.clubId);
+      out[m.clubId] = club ? computeCapabilities(m.roles, club.customRoles) : (Array.isArray(m.caps) ? m.caps : []);
+    }
+    return out;
+  }, [memberships, clubs, signedInUid, userProfile]);
+
+  const canIn = useCallback((clubId, capabilityKey) => hasCap(myClubCaps[clubId], capabilityKey), [myClubCaps]);
+
+  // Capability check for the active workspace. Personal Mode has no club, so
+  // only the player's own actions apply there; club-specific checks in the
+  // Personal view use canIn(clubId, ...).
   const can = useMemo(() => {
     return (capabilityKey) => {
       if (isPersonalWorkspace) {
         return ['log_own_workload', 'view_squad_schedule'].includes(capabilityKey);
       }
-      if (!currentUserMembership) return false;
-
-      const memberRoles = Array.isArray(currentUserMembership.roles) ? currentUserMembership.roles : [currentUserMembership.roles];
-      const normalizedRoles = memberRoles.map(r => String(r || '').toLowerCase());
-
-      if (normalizedRoles.some(r => r.includes('admin') || r.includes('coach') || r.includes('head'))) {
-        return true;
-      }
-
-      const clubRolesDefinition = Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [];
-      for (const rName of memberRoles) {
-        const foundRoleDef = clubRolesDefinition.find(def => def && def.name === rName);
-        if (foundRoleDef && Array.isArray(foundRoleDef.capabilities)) {
-          if (foundRoleDef.capabilities.includes('*') || foundRoleDef.capabilities.includes(capabilityKey)) {
-            return true;
-          }
-        }
-      }
-      return false;
+      return canIn(activeClubId, capabilityKey);
     };
-  }, [isPersonalWorkspace, currentUserMembership, currentClub]);
+  }, [isPersonalWorkspace, canIn, activeClubId]);
 
   // firestore.rules authorise club actions from the `caps` list stored on each
   // membership. When roles or role definitions change, a member who manages
@@ -482,20 +486,40 @@ export default function App() {
     );
   }, [memberships, currentHuman, userProfile]);
 
-  const userAdminOrCoachClubs = useMemo(() => {
-    return userMemberships.map(m => {
-      const club = clubs.find(c => c.id === m.clubId);
-      if (!club) return null;
+  // Clubs offered in the "Managing:" menu: those where my roles grant at least
+  // one club-management capability. Members with only the player capabilities
+  // use the club from their Personal view.
+  const clubViewClubs = useMemo(() => {
+    return userMemberships
+      .map(m => clubs.find(c => c.id === m.clubId))
+      .filter(club => club && hasAnyCap(myClubCaps[club.id], CLUB_VIEW_CAPS));
+  }, [userMemberships, clubs, myClubCaps]);
 
-      const roles = Array.isArray(m.roles) ? m.roles : [m.roles];
-      const hasPrivilege = roles.some(r => {
-        const lower = String(r || '').toLowerCase();
-        return lower.includes('admin') || lower.includes('coach') || lower.includes('head');
-      });
+  // First club-view tab I am allowed to open.
+  const firstClubTab = (clubId) => {
+    const caps = myClubCaps[clubId];
+    if (hasAnyCap(caps, PLANNER_CAPS)) return 'allocator';
+    if (hasCap(caps, 'view_squad_health_matrix')) return 'matrix';
+    if (hasAnyCap(caps, ROSTER_TAB_CAPS)) return 'roster';
+    return 'announcements';
+  };
 
-      return hasPrivilege ? club : null;
-    }).filter(Boolean);
-  }, [userMemberships, clubs]);
+  // If my roles change and I lose club-view access, fall back to Personal Mode.
+  // Only after the club had been confirmed as allowed: a club I just created or
+  // switched to may not have loaded yet.
+  const activeClubAllowed = isPersonalWorkspace || clubViewClubs.some(c => c.id === activeClubId);
+  const lastAllowedClubRef = useRef(null);
+  useEffect(() => {
+    if (isPersonalWorkspace) return;
+    if (activeClubAllowed) {
+      lastAllowedClubRef.current = activeClubId;
+    } else if (lastAllowedClubRef.current === activeClubId) {
+      lastAllowedClubRef.current = null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-off reset after losing access
+      setActiveClubId('club-personal');
+      setActiveTab('personal-planner');
+    }
+  }, [isPersonalWorkspace, activeClubAllowed, activeClubId]);
 
   const currentUserAssignedSquadIds = useMemo(() => {
     if (!isPersonalWorkspace && currentUserMembership) {
@@ -538,15 +562,18 @@ export default function App() {
     }));
 
     const userClubIds = userMemberships.map(m => m.clubId);
-    const isPlanCreatorOrAdmin = can('create_zone_plans') || can('edit_zone_plans');
 
     const rawClubPlans = zonePlans.filter(p => {
       if (!userClubIds.includes(p.clubId)) return false;
-      if (p.visibleToPlayers === false && !isPlanCreatorOrAdmin) return false;
+      // Personal view: only published plans of clubs where my roles allow
+      // viewing my assigned schedule. Drafts stay in the Club Training Planner.
+      if (p.visibleToPlayers === false) return false;
+      if (!canIn(p.clubId, 'view_squad_schedule')) return false;
 
-      // Show the session only if it is open to the whole club, or one of its
-      // zones is assigned to my squad, or I am named in one of its net lanes.
-      // (Applies to coaches too: the full plan lives in the Club Training Planner.)
+      // Show the session only if one of its zones is assigned to my squad or I
+      // am named in one of its net lanes. Unassigned activities are shown to
+      // nobody. (Applies to coaches too: the full plan lives in the Club
+      // Training Planner.)
       if (!getMyPartOfPlan(p, mySquadsAndName(p.clubId)).visible) return false;
 
       return true;
@@ -576,7 +603,7 @@ export default function App() {
     }
 
     return combined;
-  }, [personalPlans, zonePlans, userMemberships, clubs, currentHuman, userProfile, trainingFilterType, unifiedDateJump, can, mySquadsAndName]);
+  }, [personalPlans, zonePlans, userMemberships, clubs, currentHuman, userProfile, trainingFilterType, unifiedDateJump, canIn, mySquadsAndName]);
 
   const paginatedUnifiedFeed = useMemo(() => {
     const start = (trainingFeedPage - 1) * ITEMS_PER_PAGE;
@@ -663,6 +690,18 @@ export default function App() {
 
     return roster;
   }, [memberships, allUsers, activeClubId, currentHuman, userMemberships]);
+
+  // True if changing (or removing, when newRoles is null) this membership
+  // would leave the active club with no member holding every permission.
+  const wouldLeaveClubWithoutFullAccess = (membershipDocId, newRoles) => {
+    const defs = currentClub.customRoles;
+    return !memberships
+      .filter(m => m.clubId === activeClubId)
+      .some(m => {
+        if (m.id === membershipDocId) return newRoles !== null && computeCapabilities(newRoles, defs).includes('*');
+        return computeCapabilities(m.roles, defs).includes('*');
+      });
+  };
 
   const handleCreateClub = async (e) => {
     e.preventDefault();
@@ -1142,7 +1181,7 @@ export default function App() {
           {/* Right actions container with flex-wrap enabled for mobile screens */}
           <div className="flex flex-wrap items-center justify-center lg:justify-end gap-2.5 w-full lg:w-auto">
             
-            {userAdminOrCoachClubs.length > 0 && (
+            {clubViewClubs.length > 0 && (
               <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
                 <span className="text-[10px] text-slate-400 font-bold uppercase">MANAGING:</span>
                 <select
@@ -1150,7 +1189,7 @@ export default function App() {
                   onChange={(e) => {
                     setActiveClubId(e.target.value);
                     if (e.target.value !== 'club-personal') {
-                      setActiveTab('allocator');
+                      setActiveTab(firstClubTab(e.target.value));
                     } else {
                       setActiveTab('dashboard');
                     }
@@ -1159,7 +1198,7 @@ export default function App() {
                   className="bg-slate-900 text-emerald-400 font-extrabold focus:outline-none cursor-pointer"
                 >
                   <option value="club-personal">Personal Mode</option>
-                  {userAdminOrCoachClubs.map(c => (
+                  {clubViewClubs.map(c => (
                     <option key={c.id} value={c.id}>{c.name} ({c.abbreviation || c.code})</option>
                   ))}
                 </select>
@@ -1260,7 +1299,7 @@ export default function App() {
                 </button>
               )}
 
-              {can('create_zone_plans') && (
+              {PLANNER_CAPS.some(can) && (
                 <button
                   onClick={() => setActiveTab('allocator')}
                   className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
@@ -1271,7 +1310,7 @@ export default function App() {
                 </button>
               )}
 
-              {can('manage_roster') && (
+              {ROSTER_TAB_CAPS.some(can) && (
                 <button
                   onClick={() => setActiveTab('roster')}
                   className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all ${
@@ -1533,8 +1572,8 @@ export default function App() {
 
                       const slot = item.timeSlots?.[0];
                       const availableSquads = clubs.find(c => c.id === item.clubId)?.squads || [];
-                      // Club sessions show only my part: my squads' zones, lanes
-                      // naming me, and anything not assigned to anyone.
+                      // Club sessions show only my part: my squads' zones and the
+                      // lanes naming me. Unassigned activities are not shown.
                       const myPart = isPersonal ? null : getMyPartOfPlan(item, mySquadsAndName(item.clubId));
                       const myCustomZones = myPart ? myPart.zones : (slot?.customZones || []);
                       const myNetLanes = myPart ? myPart.lanes : (slot?.netLanes || []);
@@ -1716,11 +1755,13 @@ export default function App() {
                                             {isPollClosed ? "🔒 Poll Closed (Session Date Passed)" : "Please confirm your availability for this training session."}
                                           </p>
                                         </div>
-                                        <div className="flex items-center gap-2 text-[11px]">
-                                          <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
-                                          <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
-                                          <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
-                                        </div>
+                                        {canIn(item.clubId, 'view_poll_results') && (
+                                          <div className="flex items-center gap-2 text-[11px]">
+                                            <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">✓ Attending: {attendingCount}</span>
+                                            <span className="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-bold">✕ Declined: {declinedCount}</span>
+                                            <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">? Maybe: {maybeCount}</span>
+                                          </div>
+                                        )}
                                       </div>
 
                                       <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -1822,7 +1863,7 @@ export default function App() {
 
                                   {myPart && myPart.hiddenCount > 0 && (
                                     <p className="text-[11px] text-slate-400">
-                                      Showing your part of this session. Zones and net lanes for other squads or players are hidden.
+                                      Showing your part of this session. Other zones and net lanes are hidden.
                                     </p>
                                   )}
 
@@ -1871,7 +1912,7 @@ export default function App() {
                                     )}
                                   </div>
 
-                                  {isPastPlan ? (
+                                  {!canIn(item.clubId, 'log_own_workload') ? null : isPastPlan ? (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -1879,6 +1920,7 @@ export default function App() {
                                           setCompletionTarget({
                                             planId: item.id,
                                             id: item.id,
+                                            clubId: item.clubId,
                                             title: item.title,
                                             balls: 36,
                                             rpe: 8
@@ -1983,7 +2025,7 @@ export default function App() {
         )}
 
         {/* TAB 3: SQUAD HEALTH MATRIX */}
-        {!isPersonalWorkspace && activeTab === 'matrix' && (
+        {!isPersonalWorkspace && can('view_squad_health_matrix') && activeTab === 'matrix' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex justify-between items-center">
               <div>
@@ -2018,7 +2060,7 @@ export default function App() {
         )}
 
         {/* TAB 4: CLUB TRAINING PLANNER */}
-        {!isPersonalWorkspace && activeTab === 'allocator' && (
+        {!isPersonalWorkspace && PLANNER_CAPS.some(can) && activeTab === 'allocator' && (
           <div className="space-y-6">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -2027,12 +2069,14 @@ export default function App() {
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">Design multi-zone training sessions, net lanes, and live attendance tracking for {currentClub.name}.</p>
               </div>
-              <button
-                onClick={() => handleOpenCreateZonePlanModal()}
-                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-1.5"
-              >
-                <IconPlus /> Create Club Training Plan
-              </button>
+              {can('create_zone_plans') && (
+                <button
+                  onClick={() => handleOpenCreateZonePlanModal()}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-1.5"
+                >
+                  <IconPlus /> Create Club Training Plan
+                </button>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -2104,29 +2148,31 @@ export default function App() {
                                 </button>
                               )}
 
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  try {
-                                    const duplicatedZonePlan = {
-                                      clubId: plan.clubId || activeClubId,
-                                      title: plan.title + ' (Copy)',
-                                      date: getNextWeekFormatted(),
-                                      pollEnabled: plan.pollEnabled !== false,
-                                      visibleToPlayers: true,
-                                      timeSlots: plan.timeSlots || [],
-                                      createdAt: new Date().toISOString()
-                                    };
-                                    await addDoc(collection(db, 'zone_plans'), duplicatedZonePlan);
-                                    triggerNotify('Training night plan duplicated for next week! ✓', 'success');
-                                  } catch (err) {
-                                    console.error("Error duplicating zone plan:", err);
-                                  }
-                                }}
-                                className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
-                              >
-                                📋 Duplicate
-                              </button>
+                              {can('create_zone_plans') && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                      const duplicatedZonePlan = {
+                                        clubId: plan.clubId || activeClubId,
+                                        title: plan.title + ' (Copy)',
+                                        date: getNextWeekFormatted(),
+                                        pollEnabled: plan.pollEnabled !== false,
+                                        visibleToPlayers: true,
+                                        timeSlots: plan.timeSlots || [],
+                                        createdAt: new Date().toISOString()
+                                      };
+                                      await addDoc(collection(db, 'zone_plans'), duplicatedZonePlan);
+                                      triggerNotify('Training night plan duplicated for next week! ✓', 'success');
+                                    } catch (err) {
+                                      console.error("Error duplicating zone plan:", err);
+                                    }
+                                  }}
+                                  className="bg-slate-950 hover:bg-slate-800 text-indigo-400 border border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+                                >
+                                  📋 Duplicate
+                                </button>
+                              )}
 
                               {can('edit_zone_plans') && (
                                 <button
@@ -2147,7 +2193,7 @@ export default function App() {
                               )}
                             </div>
 
-                            {plan.pollEnabled !== false && (
+                            {plan.pollEnabled !== false && can('view_poll_results') && (
                               <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-2">
                                   <span className="font-extrabold text-xs text-emerald-400">📊 Live Attendance Poll Results</span>
@@ -2361,31 +2407,33 @@ export default function App() {
         )}
 
         {/* TAB 6: CLUB ROSTER & CAPABILITY MATRIX */}
-        {!isPersonalWorkspace && can('manage_roster') && activeTab === 'roster' && (
+        {!isPersonalWorkspace && ROSTER_TAB_CAPS.some(can) && activeTab === 'roster' && (
           <div className="space-y-6">
-            <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                    CLUB INVITE CODE: <strong className="text-white tracking-widest">{currentClub.code || 'CC2026'}</strong>
-                  </span>
+            {can('manage_roster') && (
+              <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
+                      CLUB INVITE CODE: <strong className="text-white tracking-widest">{currentClub.code || 'CC2026'}</strong>
+                    </span>
+                  </div>
+                  <h2 className="text-base font-bold text-white mt-1.5">{currentClub.name} - Member Roster & Dynamic Capability Matrix</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">Create custom roles and toggle capabilities to tailor what each role can do.</p>
                 </div>
-                <h2 className="text-base font-bold text-white mt-1.5">{currentClub.name} - Member Roster & Dynamic Capability Matrix</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Create custom roles and toggle capabilities to tailor what each role can do.</p>
+  
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(currentClub.code || 'CC2026');
+                      triggerNotify('Copied Club Code "' + (currentClub.code || 'CC2026') + '" to clipboard!', 'success');
+                    }}
+                    className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-2 whitespace-nowrap"
+                  >
+                    📋 Copy Invite Code
+                  </button>
+                </div>
               </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(currentClub.code || 'CC2026');
-                    triggerNotify('Copied Club Code "' + (currentClub.code || 'CC2026') + '" to clipboard!', 'success');
-                  }}
-                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs px-4 py-2.5 rounded-xl transition-all shadow flex items-center gap-2 whitespace-nowrap"
-                >
-                  📋 Copy Invite Code
-                </button>
-              </div>
-            </div>
+            )}
 
             {/* DYNAMIC CAPABILITY MATRIX ROLE BUILDER (ALPHABETICAL STACKED CARDS) */}
             {can('configure_roles') && (
@@ -2439,8 +2487,10 @@ export default function App() {
                       .slice()
                       .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
                       .map((rDef, index) => {
-                        const isProtectedRole = rDef.name === 'Admin' || rDef.name === 'Player';
-                        const isAdminRole = rDef.name === 'Admin';
+                        // Full access comes from holding '*', not from the name.
+                        // 'Player' is protected because invite-code joins use it.
+                        const isAdminRole = Array.isArray(rDef.capabilities) && rDef.capabilities.includes('*');
+                        const isProtectedRole = isAdminRole || rDef.name === 'Player';
                         const isRoleExpanded = expandedRoles[rDef.name] ?? false;
 
                         return (
@@ -2507,6 +2557,10 @@ export default function App() {
                                         disabled={isAdminRole}
                                         onClick={async () => {
                                           if (isAdminRole) return;
+                                          if (!hasCap && !can(cap.key)) {
+                                            triggerNotify(`You can't add "${cap.label}": you don't have that permission yourself.`, 'info');
+                                            return;
+                                          }
 
                                           const currentCaps = Array.isArray(rDef.capabilities) ? rDef.capabilities : [];
                                           let newCaps;
@@ -2612,163 +2666,183 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
-                  <div>
-                    <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-                      👥 Active Club Roster ({memberships.filter(m => m.clubId === activeClubId).length} Members)
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">Sorted alphabetically. Click to expand controls for roles and squads.</p>
+              {can('manage_roster') && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+                        👥 Active Club Roster ({memberships.filter(m => m.clubId === activeClubId).length} Members)
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">Sorted alphabetically. Click to expand controls for roles and squads.</p>
+                    </div>
+                  </div>
+  
+                  <div className="space-y-3">
+                    {memberships
+                      .filter(m => m.clubId === activeClubId)
+                      .slice()
+                      .sort((a, b) => {
+                        const nameA = resolveMemberFullName(a.userId) || '';
+                        const nameB = resolveMemberFullName(b.userId) || '';
+                        return nameA.localeCompare(nameB);
+                      })
+                      .map(m => {
+                        const displayName = resolveMemberFullName(m.userId);
+                        const isExpanded = expandedMembers[m.id] ?? false;
+                        
+                        const currentRoles = Array.isArray(m.roles) ? m.roles : [m.roles || 'Player'];
+                        const currentSquadIds = Array.isArray(m.squadIds) ? m.squadIds : [m.squadIds || ''];
+  
+                        const availableRoleNames = (Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [
+                          { name: 'Admin' },
+                          { name: 'Player' },
+                          { name: 'Head Coach' }
+                        ]).map(r => r.name);
+  
+                        const availableSquads = currentClub.squads || [];
+  
+                        return (
+                          <div key={m.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-4 transition-all">
+                            
+                            <div 
+                              className="flex justify-between items-center cursor-pointer select-none"
+                              onClick={() => {
+                                setExpandedMembers(prev => ({ ...prev, [m.id]: !isExpanded }));
+                              }}
+                            >
+                              <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-extrabold text-sm text-white">{displayName}</span>
+                                  {currentRoles.map((r, i) => (
+                                    <span key={i} className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] px-2 py-0.5 rounded font-bold">
+                                      {r}
+                                    </span>
+                                  ))}
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                                  {m.email || 'Email: N/A'}
+                                </p>
+                              </div>
+  
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs text-indigo-400 bg-indigo-500/10 px-3 py-1.5 rounded-xl border border-indigo-500/20 font-bold transition-all hover:bg-indigo-500/20">
+                                  {isExpanded ? '▲ Collapse' : '▼ Expand Controls'}
+                                </span>
+                              </div>
+                            </div>
+  
+                            {isExpanded && (
+                              <div className="border-t border-slate-800/80 pt-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs">
+                                
+                                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto">
+                                  
+                                  <div className="flex flex-col space-y-1 w-full sm:w-auto">
+                                    <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Roles (Multi-select)</span>
+                                    <div className="flex flex-wrap gap-1.5 max-w-xs">
+                                      {availableRoleNames.map((roleName, rIdx) => {
+                                        const isChecked = currentRoles.includes(roleName);
+                                        return (
+                                          <button
+                                            key={rIdx}
+                                            type="button"
+                                            onClick={async () => {
+                                              let updatedRoles;
+                                              if (isChecked) {
+                                                if (currentRoles.length === 1) {
+                                                  triggerNotify(`${displayName} needs at least one role. Add the new role first, then remove this one.`, 'info');
+                                                  return;
+                                                }
+                                                updatedRoles = currentRoles.filter(r => r !== roleName);
+                                              } else {
+                                                // No escalation: you can only grant a role whose
+                                                // permissions you already hold yourself.
+                                                const grantCaps = computeCapabilities([roleName], currentClub.customRoles);
+                                                if (!grantCaps.every(cap => can(cap))) {
+                                                  triggerNotify(`You can't assign "${roleName}": it includes permissions you don't have.`, 'info');
+                                                  return;
+                                                }
+                                                updatedRoles = [...currentRoles, roleName];
+                                              }
+                                              if (wouldLeaveClubWithoutFullAccess(m.id, updatedRoles)) {
+                                                triggerNotify('At least one member must keep a role with all permissions.', 'info');
+                                                return;
+                                              }
+                                              const memRef = doc(db, 'memberships', m.id);
+                                              await updateDoc(memRef, { roles: updatedRoles });
+                                              triggerNotify(`Updated roles for ${displayName}`, 'success');
+                                            }}
+                                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                                              isChecked 
+                                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' 
+                                                : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+                                            }`}
+                                          >
+                                            {isChecked ? '✓ ' : '+ '}{roleName}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+  
+                                  <div className="flex flex-col space-y-1 w-full sm:w-auto">
+                                    <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Squads (Multi-select)</span>
+                                    <div className="flex flex-wrap gap-1.5 max-w-xs">
+                                      {availableSquads.map((squad) => {
+                                        const isAssigned = currentSquadIds.includes(squad.id);
+                                        return (
+                                          <button
+                                            key={squad.id}
+                                            type="button"
+                                            onClick={async () => {
+                                              let updatedSquads;
+                                              if (isAssigned) {
+                                                updatedSquads = currentSquadIds.filter(id => id !== squad.id);
+                                              } else {
+                                                updatedSquads = [...currentSquadIds, squad.id];
+                                              }
+                                              const memRef = doc(db, 'memberships', m.id);
+                                              await updateDoc(memRef, { squadIds: updatedSquads });
+                                              triggerNotify(`Assigned ${displayName} to squad ${squad.name}`, 'success');
+                                            }}
+                                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                                              isAssigned 
+                                                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
+                                                : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+                                            }`}
+                                          >
+                                            {isAssigned ? '✓ ' : '+ '}{squad.name}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+  
+                                </div>
+  
+                                <button
+                                  onClick={async () => {
+                                    if (wouldLeaveClubWithoutFullAccess(m.id, null)) {
+                                      triggerNotify('At least one member must keep a role with all permissions.', 'info');
+                                      return;
+                                    }
+                                    const memRef = doc(db, 'memberships', m.id);
+                                    await deleteDoc(memRef);
+                                    triggerNotify('Removed member from club roster.', 'info');
+                                  }}
+                                  className="bg-slate-900 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold transition-all text-xs whitespace-nowrap self-end lg:self-center"
+                                >
+                                  Remove Member
+                                </button>
+  
+                              </div>
+                            )}
+  
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
-
-                <div className="space-y-3">
-                  {memberships
-                    .filter(m => m.clubId === activeClubId)
-                    .slice()
-                    .sort((a, b) => {
-                      const nameA = resolveMemberFullName(a.userId) || '';
-                      const nameB = resolveMemberFullName(b.userId) || '';
-                      return nameA.localeCompare(nameB);
-                    })
-                    .map(m => {
-                      const displayName = resolveMemberFullName(m.userId);
-                      const isExpanded = expandedMembers[m.id] ?? false;
-                      
-                      const currentRoles = Array.isArray(m.roles) ? m.roles : [m.roles || 'Player'];
-                      const currentSquadIds = Array.isArray(m.squadIds) ? m.squadIds : [m.squadIds || ''];
-
-                      const availableRoleNames = (Array.isArray(currentClub.customRoles) ? currentClub.customRoles : [
-                        { name: 'Admin' },
-                        { name: 'Player' },
-                        { name: 'Head Coach' }
-                      ]).map(r => r.name);
-
-                      const availableSquads = currentClub.squads || [];
-
-                      return (
-                        <div key={m.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-4 transition-all">
-                          
-                          <div 
-                            className="flex justify-between items-center cursor-pointer select-none"
-                            onClick={() => {
-                              setExpandedMembers(prev => ({ ...prev, [m.id]: !isExpanded }));
-                            }}
-                          >
-                            <div>
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-extrabold text-sm text-white">{displayName}</span>
-                                {currentRoles.map((r, i) => (
-                                  <span key={i} className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] px-2 py-0.5 rounded font-bold">
-                                    {r}
-                                  </span>
-                                ))}
-                              </div>
-                              <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
-                                {m.email || 'Email: N/A'}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-3">
-                              <span className="text-xs text-indigo-400 bg-indigo-500/10 px-3 py-1.5 rounded-xl border border-indigo-500/20 font-bold transition-all hover:bg-indigo-500/20">
-                                {isExpanded ? '▲ Collapse' : '▼ Expand Controls'}
-                              </span>
-                            </div>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="border-t border-slate-800/80 pt-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 text-xs">
-                              
-                              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:w-auto">
-                                
-                                <div className="flex flex-col space-y-1 w-full sm:w-auto">
-                                  <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Roles (Multi-select)</span>
-                                  <div className="flex flex-wrap gap-1.5 max-w-xs">
-                                    {availableRoleNames.map((roleName, rIdx) => {
-                                      const isChecked = currentRoles.includes(roleName);
-                                      return (
-                                        <button
-                                          key={rIdx}
-                                          type="button"
-                                          onClick={async () => {
-                                            let updatedRoles;
-                                            if (isChecked) {
-                                              if (currentRoles.length === 1) return;
-                                              updatedRoles = currentRoles.filter(r => r !== roleName);
-                                            } else {
-                                              updatedRoles = [...currentRoles, roleName];
-                                            }
-                                            const memRef = doc(db, 'memberships', m.id);
-                                            await updateDoc(memRef, { roles: updatedRoles });
-                                            triggerNotify(`Updated roles for ${displayName}`, 'success');
-                                          }}
-                                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                                            isChecked 
-                                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' 
-                                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
-                                          }`}
-                                        >
-                                          {isChecked ? '✓ ' : '+ '}{roleName}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-
-                                <div className="flex flex-col space-y-1 w-full sm:w-auto">
-                                  <span className="text-[9px] text-slate-400 uppercase font-bold">Assigned Squads (Multi-select)</span>
-                                  <div className="flex flex-wrap gap-1.5 max-w-xs">
-                                    {availableSquads.map((squad) => {
-                                      const isAssigned = currentSquadIds.includes(squad.id);
-                                      return (
-                                        <button
-                                          key={squad.id}
-                                          type="button"
-                                          onClick={async () => {
-                                            let updatedSquads;
-                                            if (isAssigned) {
-                                              updatedSquads = currentSquadIds.filter(id => id !== squad.id);
-                                            } else {
-                                              updatedSquads = [...currentSquadIds, squad.id];
-                                            }
-                                            const memRef = doc(db, 'memberships', m.id);
-                                            await updateDoc(memRef, { squadIds: updatedSquads });
-                                            triggerNotify(`Assigned ${displayName} to squad ${squad.name}`, 'success');
-                                          }}
-                                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                                            isAssigned 
-                                              ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
-                                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
-                                          }`}
-                                        >
-                                          {isAssigned ? '✓ ' : '+ '}{squad.name}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-
-                              </div>
-
-                              <button
-                                onClick={async () => {
-                                  const memRef = doc(db, 'memberships', m.id);
-                                  await deleteDoc(memRef);
-                                  triggerNotify('Removed member from club roster.', 'info');
-                                }}
-                                className="bg-slate-900 hover:bg-rose-950/40 text-rose-400 border border-slate-800 px-3 py-1.5 rounded-xl font-bold transition-all text-xs whitespace-nowrap self-end lg:self-center"
-                              >
-                                Remove Member
-                              </button>
-
-                            </div>
-                          )}
-
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
+              )}
             </div>
 
           </div>
@@ -3371,9 +3445,11 @@ export default function App() {
                   try {
                     const logData = {
                       userId: currentHuman.uid,
-                      clubId: activeClubId,
+                      // Club sessions are logged under their club so the squad
+                      // health matrix includes them; personal sessions stay private.
+                      clubId: completionTarget.clubId || 'club-personal',
                       planId: completionTarget.id,
-                      scope: isPersonalWorkspace ? 'PERSONAL' : 'CLUB',
+                      scope: completionTarget.clubId ? 'CLUB' : 'PERSONAL',
                       date: todayFormatted,
                       balls: Number(actualBalls),
                       rpe: Number(actualRPE),
