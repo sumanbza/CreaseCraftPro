@@ -1,0 +1,172 @@
+rules_version = '2';
+
+// CreaseCraft security model
+// --------------------------
+// * Every club membership lives at memberships/{clubId}_{userId}, so a rule can
+//   check "is the caller a member of club X" with a single exists().
+// * Each membership stores `caps`: the capabilities granted by its roles
+//   ('*' = everything). The app recomputes it when roles change
+//   (see src/lib/capabilities.js). Rules authorise club actions from `caps`.
+// * Invite codes live at club_codes/{CODE} -> { clubId }. Anyone signed in can
+//   look up one code; nobody can list them.
+// * Workload logs and personal plans are private to their owner. Logs written
+//   inside a club are also readable by members with view_squad_health_matrix.
+// * The Cloud Function uses the Admin SDK and is not affected by these rules.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    function clubPath(clubId) { return /databases/$(database)/documents/clubs/$(clubId); }
+    function memberPath(clubId) {
+      return /databases/$(database)/documents/memberships/$(clubId + '_' + request.auth.uid);
+    }
+
+    function isMember(clubId) {
+      return signedIn() && clubId is string && exists(memberPath(clubId));
+    }
+    function hasCap(clubId, cap) {
+      return isMember(clubId)
+        && get(memberPath(clubId)).data.get('caps', []).hasAny(['*', cap]);
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    function unchanged(field) {
+      return request.resource.data.get(field, null) == resource.data.get(field, null);
+    }
+
+    // ---------------------------------------------------------------- users
+    // Profiles hold email and push tokens: owner only.
+    match /users/{userId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+
+    // ---------------------------------------------------------------- clubs
+    match /clubs/{clubId} {
+      allow read: if isMember(clubId);
+
+      allow create: if signedIn() && request.resource.data.createdBy == uid();
+
+      allow update: if unchanged('createdBy') && (
+           (changedKeys().hasOnly(['squads']) && hasCap(clubId, 'manage_squads'))
+        || (changedKeys().hasOnly(['customRoles']) && hasCap(clubId, 'configure_roles'))
+        || hasCap(clubId, 'manage_club_settings')
+      );
+
+      allow delete: if hasCap(clubId, 'manage_club_settings');
+    }
+
+    // ----------------------------------------------------------- club codes
+    match /club_codes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      // Only a brand-new code can be created (an existing one would be an
+      // update, which is denied), so codes stay unique. Either the club is
+      // being founded in the same batch, or a club admin registers the code.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['clubId', 'createdAt'])
+        && request.resource.data.clubId is string
+        && (
+             (!exists(clubPath(request.resource.data.clubId))
+               && getAfter(clubPath(request.resource.data.clubId)).data.createdBy == uid()
+               && getAfter(clubPath(request.resource.data.clubId)).data.code == code)
+          || hasCap(request.resource.data.clubId, 'manage_club_settings')
+        );
+
+      allow update: if false;
+      allow delete: if hasCap(resource.data.clubId, 'manage_club_settings');
+    }
+
+    // ---------------------------------------------------------- memberships
+    match /memberships/{membershipId} {
+      allow read: if signedIn()
+        && (resource.data.userId == uid() || isMember(resource.data.clubId));
+
+      // Founder: creating their club in the same batch, as Admin.
+      // Joiner: holds a valid invite code, joins as Player with player caps.
+      allow create: if signedIn()
+        && request.resource.data.userId == uid()
+        && membershipId == request.resource.data.clubId + '_' + uid()
+        && request.resource.data.keys().hasOnly(
+             ['userId', 'clubId', 'roles', 'caps', 'squadIds', 'userName', 'discipline', 'joinCode', 'createdAt'])
+        && (
+             (!exists(clubPath(request.resource.data.clubId))
+               && getAfter(clubPath(request.resource.data.clubId)).data.createdBy == uid())
+          || (request.resource.data.roles == ['Player']
+               && request.resource.data.squadIds == []
+               && request.resource.data.caps.hasOnly(['view_squad_schedule', 'log_own_workload'])
+               && request.resource.data.joinCode is string
+               && get(/databases/$(database)/documents/club_codes/$(request.resource.data.joinCode)).data.clubId
+                    == request.resource.data.clubId)
+        );
+
+      allow update: if unchanged('userId') && unchanged('clubId') && (
+           // Roster managers assign roles, squads and caps.
+           (hasCap(resource.data.clubId, 'manage_roster')
+             && changedKeys().hasOnly(['roles', 'squadIds', 'caps']))
+           // Role designers re-sync caps after editing role definitions.
+        || (hasCap(resource.data.clubId, 'configure_roles') && changedKeys().hasOnly(['caps']))
+           // Members keep their own display name / discipline current.
+        || (resource.data.userId == uid() && changedKeys().hasOnly(['userName', 'discipline']))
+      );
+
+      // Removed by a roster manager, or the member leaves.
+      allow delete: if signedIn()
+        && (resource.data.userId == uid() || hasCap(resource.data.clubId, 'manage_roster'));
+    }
+
+    // ------------------------------------------------------- training plans
+    match /zone_plans/{planId} {
+      allow read: if isMember(resource.data.clubId);
+      allow create: if hasCap(request.resource.data.clubId, 'create_zone_plans');
+      allow update: if unchanged('clubId') && hasCap(resource.data.clubId, 'edit_zone_plans');
+      allow delete: if hasCap(resource.data.clubId, 'edit_zone_plans');
+    }
+
+    match /personal_plans/{planId} {
+      allow read, delete: if signedIn() && resource.data.userId == uid();
+      allow update: if signedIn() && resource.data.userId == uid()
+        && request.resource.data.userId == uid();
+      allow create: if signedIn() && request.resource.data.userId == uid();
+    }
+
+    // ------------------------------------------------------- announcements
+    match /announcements/{annId} {
+      allow read: if isMember(resource.data.clubId);
+      allow create: if hasCap(request.resource.data.clubId, 'broadcast_announcements');
+      allow delete: if hasCap(resource.data.clubId, 'broadcast_announcements');
+      allow update: if false;
+    }
+
+    // ------------------------------------------------------ attendance polls
+    match /poll_responses/{responseId} {
+      allow read: if isMember(resource.data.clubId);
+      allow create: if request.resource.data.userId == uid()
+        && isMember(request.resource.data.clubId);
+      allow update: if resource.data.userId == uid()
+        && unchanged('userId') && unchanged('clubId') && unchanged('planId');
+      allow delete: if signedIn() && resource.data.userId == uid();
+    }
+
+    // -------------------------------------------------------- workload logs
+    match /logs/{logId} {
+      allow read: if signedIn() && (
+           resource.data.userId == uid()
+        || (resource.data.clubId != 'club-personal'
+              && hasCap(resource.data.clubId, 'view_squad_health_matrix'))
+      );
+      allow create: if signedIn()
+        && request.resource.data.userId == uid()
+        && (request.resource.data.clubId == 'club-personal'
+              || isMember(request.resource.data.clubId));
+      allow update: if signedIn() && resource.data.userId == uid()
+        && unchanged('userId') && unchanged('clubId');
+      allow delete: if signedIn() && resource.data.userId == uid();
+    }
+  }
+}
