@@ -11,8 +11,8 @@ const MAX_RETRIES = 4;
  * Listeners are re-created only when the set of keys changes, so callers must
  * encode everything that changes the query (club id, user id, ...) in `key`.
  *
- * Documents written locally but not yet confirmed by the server carry
- * `_pendingWrite: true`. A listener rejected with permission-denied is retried
+ * Documents created locally that the server has not confirmed yet carry
+ * `_unconfirmed: true` (later edits to an already-confirmed document don't). A listener rejected with permission-denied is retried
  * a few times with backoff, because access can depend on a membership write
  * that the server is still committing.
  */
@@ -25,14 +25,19 @@ export function useLiveQueries(specs) {
     const active = new Map(); // key -> unsubscribe
     const timers = [];
 
+    const confirmed = new Set(); // ids the server has confirmed at least once
+
     const subscribe = ({ key, ref, isDoc }, attempt = 0) => {
       const unsubscribe = onSnapshot(
         ref,
         { includeMetadataChanges: true },
         (snap) => {
-          const toItem = (d) => (d.metadata.hasPendingWrites
-            ? { id: d.id, ...d.data(), _pendingWrite: true }
-            : { id: d.id, ...d.data() });
+          const toItem = (d) => {
+            if (!d.metadata.hasPendingWrites) confirmed.add(d.ref.path);
+            return confirmed.has(d.ref.path)
+              ? { id: d.id, ...d.data() }
+              : { id: d.id, ...d.data(), _unconfirmed: true };
+          };
           const docs = isDoc
             ? (snap.exists() ? [toItem(snap)] : [])
             : snap.docs.map(toItem);

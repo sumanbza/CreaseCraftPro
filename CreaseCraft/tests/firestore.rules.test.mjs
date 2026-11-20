@@ -69,6 +69,17 @@ await no('nobody lists all logs', getDocs(collection(A, 'logs')));
 await ok('admin assigns role + caps', updateDoc(doc(A, `memberships/${cid}_bob`), { roles: ['Physio'], caps: ['view_squad_health_matrix'] }));
 await ok('physio now reads club logs', getDocs(byClub(B, 'logs', cid)));
 
+// no escalation: a roster manager without '*' cannot grant more than they hold
+await env.withSecurityRulesDisabled(async ctx => {
+  await setDoc(doc(ctx.firestore(), `memberships/${cid}_mgr`), { userId: 'mgr', clubId: cid, roles: ['Team Manager'], caps: ['manage_roster', 'view_squad_schedule'], squadIds: [] });
+  await setDoc(doc(ctx.firestore(), `memberships/${cid}_pete`), { userId: 'pete', clubId: cid, roles: ['Player'], caps: ['view_squad_schedule'], squadIds: [] });
+});
+const M = as('mgr');
+await no('manager cannot grant full access', updateDoc(doc(M, `memberships/${cid}_pete`), { roles: ['Admin'], caps: ['*'] }));
+await no('manager cannot grant a capability they lack', updateDoc(doc(M, `memberships/${cid}_pete`), { caps: ['view_squad_health_matrix'] }));
+await ok('manager can grant capabilities they hold', updateDoc(doc(M, `memberships/${cid}_pete`), { roles: ['Team Manager'], caps: ['manage_roster'] }));
+await ok('manager can assign squads', updateDoc(doc(M, `memberships/${cid}_pete`), { squadIds: ['s'] }));
+
 // plans, announcements, polls
 const plan = await addDoc(collection(A, 'zone_plans'), { clubId: cid, title: 'Nets' });
 await ok('member reads club plans', getDocs(byClub(B, 'zone_plans', cid)));

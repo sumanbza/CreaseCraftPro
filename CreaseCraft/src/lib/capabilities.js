@@ -13,15 +13,11 @@ export const JOIN_CAPS = ['view_squad_schedule', 'log_own_workload'];
 
 export const membershipId = (clubId, userId) => `${clubId}_${userId}`;
 
-const isPrivilegedRoleName = (name) => {
-  const lower = String(name || '').toLowerCase();
-  return lower.includes('admin') || lower.includes('coach') || lower.includes('head');
-};
-
+// Access comes only from the club's permissions matrix (role definitions in
+// clubs/{id}.customRoles); role names carry no meaning. A role holding '*' has
+// every capability.
 export function computeCapabilities(roles, customRoles) {
   const roleList = (Array.isArray(roles) ? roles : [roles]).filter(Boolean);
-  if (roleList.some(isPrivilegedRoleName)) return ['*'];
-
   const defs = Array.isArray(customRoles) ? customRoles : [];
   const caps = new Set();
   for (const roleName of roleList) {
@@ -31,6 +27,19 @@ export function computeCapabilities(roles, customRoles) {
   if (caps.has('*')) return ['*'];
   return [...caps].sort();
 }
+
+export const hasCap = (caps, key) =>
+  Array.isArray(caps) && (caps.includes('*') || caps.includes(key));
+
+// Capabilities that open the club's management view ("Managing:" menu).
+// The two player capabilities (JOIN_CAPS) only affect the Personal view.
+export const PLANNER_CAPS = ['create_zone_plans', 'edit_zone_plans', 'view_full_schedule', 'view_poll_results'];
+export const ROSTER_TAB_CAPS = ['manage_roster', 'manage_squads', 'configure_roles'];
+export const CLUB_VIEW_CAPS = [
+  ...PLANNER_CAPS, ...ROSTER_TAB_CAPS,
+  'manage_club_settings', 'broadcast_announcements', 'view_squad_health_matrix',
+];
+export const hasAnyCap = (caps, keys) => keys.some(k => hasCap(caps, k));
 
 export const sameCaps = (a, b) => {
   const x = [...(a || [])].sort();

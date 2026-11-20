@@ -6,7 +6,8 @@ rules_version = '2';
 //   check "is the caller a member of club X" with a single exists().
 // * Each membership stores `caps`: the capabilities granted by its roles
 //   ('*' = everything). The app recomputes it when roles change
-//   (see src/lib/capabilities.js). Rules authorise club actions from `caps`.
+//   (see src/lib/capabilities.js). Rules authorise club actions from `caps`;
+//   role names mean nothing. Members can only grant capabilities they hold.
 // * Invite codes live at club_codes/{CODE} -> { clubId }. Anyone signed in can
 //   look up one code; nobody can list them.
 // * Workload logs and personal plans are private to their owner. Logs written
@@ -30,6 +31,11 @@ service cloud.firestore {
     function hasCap(clubId, cap) {
       return isMember(clubId)
         && get(memberPath(clubId)).data.get('caps', []).hasAny(['*', cap]);
+    }
+    // No escalation: a member may only hand out capabilities they hold.
+    function canGrant(clubId, caps) {
+      let mine = get(memberPath(clubId)).data.get('caps', []);
+      return mine.hasAny(['*']) || caps.hasOnly(mine);
     }
 
     function changedKeys() {
@@ -108,9 +114,11 @@ service cloud.firestore {
       allow update: if unchanged('userId') && unchanged('clubId') && (
            // Roster managers assign roles, squads and caps.
            (hasCap(resource.data.clubId, 'manage_roster')
-             && changedKeys().hasOnly(['roles', 'squadIds', 'caps']))
+             && changedKeys().hasOnly(['roles', 'squadIds', 'caps'])
+             && canGrant(resource.data.clubId, request.resource.data.get('caps', [])))
            // Role designers re-sync caps after editing role definitions.
-        || (hasCap(resource.data.clubId, 'configure_roles') && changedKeys().hasOnly(['caps']))
+        || (hasCap(resource.data.clubId, 'configure_roles') && changedKeys().hasOnly(['caps'])
+             && canGrant(resource.data.clubId, request.resource.data.get('caps', [])))
            // Members keep their own display name / discipline current.
         || (resource.data.userId == uid() && changedKeys().hasOnly(['userName', 'discipline']))
       );
