@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { auth, db } from './config/firebase';
 import { getToken } from "firebase/messaging";
 import { messaging } from "./config/firebase"; // Make sure 'messaging' is exported from your config file
@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { useLiveQueries } from './hooks/useLiveQueries';
 import { computeCapabilities, sameCaps, membershipId, JOIN_CAPS } from './lib/capabilities';
+import { getMyPartOfPlan } from './lib/planVisibility';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -513,6 +514,14 @@ export default function App() {
     return [...new Set(allSquads)];
   }, [isPersonalWorkspace, currentUserMembership, userMemberships]);
 
+  // My squads in a given club plus my display name: what decides which parts
+  // of a club plan I see in my Training Planner (see lib/planVisibility.js).
+  const mySquadsAndName = useCallback((clubId) => {
+    const membership = userMemberships.find(m => m.clubId === clubId);
+    const squadIds = Array.isArray(membership?.squadIds) ? membership.squadIds : [membership?.squadIds].filter(Boolean);
+    return { squadIds, name: currentHuman.name || '' };
+  }, [userMemberships, currentHuman]);
+
   const unifiedTrainingFeed = useMemo(() => {
     const activeUid = currentHuman.uid || auth.currentUser?.uid;
     
@@ -535,42 +544,10 @@ export default function App() {
       if (!userClubIds.includes(p.clubId)) return false;
       if (p.visibleToPlayers === false && !isPlanCreatorOrAdmin) return false;
 
-      // 🔍 SQUAD & PLAYER-LEVEL AUTHORIZATION CHECK
-      if (!can('view_full_schedule')) {
-        const activeMembership = userMemberships.find(m => m.clubId === p.clubId);
-        const userSquads = activeMembership?.squadIds || [];
-        const userFullName = currentHuman.name || '';
-
-        const slot = p.timeSlots?.[0];
-        const customZones = slot?.customZones || [];
-        const netLanes = slot?.netLanes || [];
-
-        // Check 1: Does any custom zone explicitly assign one of the user's squads?
-        const squadMatched = customZones.some(z => 
-          Array.isArray(z.squadIds) && z.squadIds.some(sqId => userSquads.includes(sqId))
-        );
-
-        // Check 2: Is the player individually named in any net lane (batter or bowler)?
-        // Lanes hold comma-separated names; bowlers may carry a ball count, e.g.
-        // "Pat Cummins (36b)". Compare whole names so "Sam Smith" does not match
-        // "Sam Smithers".
-        const normaliseName = (n) => n.replace(/\([^)]*\)/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
-        const laneNames = (str) => (typeof str === 'string' ? str : '').split(',').map(normaliseName).filter(Boolean);
-        const myName = normaliseName(userFullName);
-        const individualMatched = !!myName && netLanes.some(lane =>
-          laneNames(lane.batters).includes(myName) || laneNames(lane.bowlersText).includes(myName)
-        );
-
-        // Check 3: If no squad restrictions or individual names are set anywhere in the plan,
-        // should it be visible? (Set to false if you want strict squad-only privacy, 
-        // or true if unassigned plans are open club sessions).
-        const hasAnyRestrictions = customZones.some(z => Array.isArray(z.squadIds) && z.squadIds.length > 0) ||
-                                   netLanes.some(l => l.batters || l.bowlersText);
-
-        if (hasAnyRestrictions && !squadMatched && !individualMatched) {
-          return false; // Hide this plan because it's restricted to other squads/players!
-        }
-      }
+      // Show the session only if it is open to the whole club, or one of its
+      // zones is assigned to my squad, or I am named in one of its net lanes.
+      // (Applies to coaches too: the full plan lives in the Club Training Planner.)
+      if (!getMyPartOfPlan(p, mySquadsAndName(p.clubId)).visible) return false;
 
       return true;
     }).map(p => {
@@ -599,7 +576,7 @@ export default function App() {
     }
 
     return combined;
-  }, [personalPlans, zonePlans, userMemberships, clubs, currentHuman, userProfile, trainingFilterType, unifiedDateJump, can]);
+  }, [personalPlans, zonePlans, userMemberships, clubs, currentHuman, userProfile, trainingFilterType, unifiedDateJump, can, mySquadsAndName]);
 
   const paginatedUnifiedFeed = useMemo(() => {
     const start = (trainingFeedPage - 1) * ITEMS_PER_PAGE;
@@ -1556,7 +1533,12 @@ export default function App() {
 
                       const slot = item.timeSlots?.[0];
                       const availableSquads = clubs.find(c => c.id === item.clubId)?.squads || [];
-                      const allCustomZones = slot?.customZones || [];
+                      // Club sessions show only my part: my squads' zones, lanes
+                      // naming me, and anything not assigned to anyone.
+                      const myPart = isPersonal ? null : getMyPartOfPlan(item, mySquadsAndName(item.clubId));
+                      const myCustomZones = myPart ? myPart.zones : (slot?.customZones || []);
+                      const myNetLanes = myPart ? myPart.lanes : (slot?.netLanes || []);
+                      const squadNameById = (id) => availableSquads.find(sq => sq.id === id)?.name || 'Squad';
                       const sessionPollResponses = pollResponses.filter(pr => pr.planId === item.id);
                       const attendingCount = sessionPollResponses.filter(pr => pr.status === 'ATTENDING').length;
                       const declinedCount = sessionPollResponses.filter(pr => pr.status === 'DECLINED').length;
@@ -1838,35 +1820,44 @@ export default function App() {
                                     </div>
                                   )}
 
+                                  {myPart && myPart.hiddenCount > 0 && (
+                                    <p className="text-[11px] text-slate-400">
+                                      Showing your part of this session. Zones and net lanes for other squads or players are hidden.
+                                    </p>
+                                  )}
+
                                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                                    <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
-                                      <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
-                                        🏏 Zone 1: Net Lanes & Allocation
-                                      </span>
-                                      {slot?.netLanes && slot.netLanes.length > 0 ? (
+                                    {myNetLanes.length > 0 && (
+                                      <div className="bg-slate-950 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
+                                        <span className="font-extrabold text-xs text-emerald-400 block border-b border-slate-800 pb-1">
+                                          🏏 Net Lanes & Allocation
+                                        </span>
                                         <div className="space-y-2">
-                                          {slot.netLanes.map((lane, idx) => (
+                                          {myNetLanes.map((lane, idx) => (
                                             <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
                                               <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
                                               <div className="text-slate-400">
-                                                <span>Batters: <strong className="text-slate-200">{typeof lane.batters === 'string' ? lane.batters : 'Unassigned'}</strong></span>
+                                                <span>Batters: <strong className="text-slate-200">{(typeof lane.batters === 'string' && lane.batters.trim()) || 'Unassigned'}</strong></span>
                                               </div>
                                               <div className="text-slate-400">
-                                                <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
+                                                <span>Bowlers: <strong className="text-emerald-400">{(typeof lane.bowlersText === 'string' && lane.bowlersText.trim()) || 'Unassigned'}</strong></span>
                                               </div>
                                             </div>
                                           ))}
                                         </div>
-                                      ) : (
-                                        <span className="text-[11px] text-slate-500 italic block">No net lanes configured</span>
-                                      )}
-                                    </div>
+                                      </div>
+                                    )}
 
-                                    {allCustomZones.map((zone, zIdx) => (
+                                    {myCustomZones.map((zone, zIdx) => (
                                       <div key={zone.id || zIdx} className="bg-slate-950 p-3.5 rounded-xl border border-indigo-500/30 space-y-2">
                                         <span className="font-extrabold text-xs text-indigo-400 block border-b border-slate-800 pb-1">
                                           🏟️ {zone.title || `Zone ${zIdx + 2}`}
                                         </span>
+                                        {Array.isArray(zone.squadIds) && zone.squadIds.length > 0 && (
+                                          <span className="text-[10px] text-indigo-300 block">
+                                            For: {zone.squadIds.map(squadNameById).join(', ')}
+                                          </span>
+                                        )}
                                         <div className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
                                           <span className="text-slate-200 font-semibold block">
                                             {zone.activityText || 'No activity specified'}
@@ -1874,6 +1865,10 @@ export default function App() {
                                         </div>
                                       </div>
                                     ))}
+
+                                    {myNetLanes.length === 0 && myCustomZones.length === 0 && (
+                                      <span className="text-[11px] text-slate-500 italic block">No zones or net lanes configured</span>
+                                    )}
                                   </div>
 
                                   {isPastPlan ? (
