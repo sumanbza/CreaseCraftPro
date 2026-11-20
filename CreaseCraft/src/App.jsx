@@ -551,11 +551,15 @@ export default function App() {
         );
 
         // Check 2: Is the player individually named in any net lane (batter or bowler)?
-        const individualMatched = netLanes.some(lane => {
-          const battersStr = typeof lane.batters === 'string' ? lane.batters : '';
-          const bowlersStr = typeof lane.bowlersText === 'string' ? lane.bowlersText : '';
-          return battersStr.includes(userFullName) || bowlersStr.includes(userFullName);
-        });
+        // Lanes hold comma-separated names; bowlers may carry a ball count, e.g.
+        // "Pat Cummins (36b)". Compare whole names so "Sam Smith" does not match
+        // "Sam Smithers".
+        const normaliseName = (n) => n.replace(/\([^)]*\)/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+        const laneNames = (str) => (typeof str === 'string' ? str : '').split(',').map(normaliseName).filter(Boolean);
+        const myName = normaliseName(userFullName);
+        const individualMatched = !!myName && netLanes.some(lane =>
+          laneNames(lane.batters).includes(myName) || laneNames(lane.bowlersText).includes(myName)
+        );
 
         // Check 3: If no squad restrictions or individual names are set anywhere in the plan,
         // should it be visible? (Set to false if you want strict squad-only privacy, 
@@ -604,7 +608,11 @@ export default function App() {
 
   // Paginated Club Training Plans for Club Workspace
   const clubWorkspacePlans = useMemo(() => {
-    return zonePlans.filter(p => p.clubId === activeClubId);
+    // Newest session date first; same-day plans by most recently created.
+    return zonePlans
+      .filter(p => p.clubId === activeClubId)
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))
+        || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }, [zonePlans, activeClubId]);
 
   const paginatedClubWorkspacePlans = useMemo(() => {
@@ -780,12 +788,15 @@ export default function App() {
         createdAt: new Date().toISOString()
       });
 
-      setActiveClubId(foundClub.id);
-      setActiveTab('dashboard');
+      // New members join as Player. Players use the club through their
+      // Training Planner (club sessions for their squads appear there); the
+      // club workspace switcher only lists clubs they manage.
+      setActiveClubId('club-personal');
+      setActiveTab('personal-planner');
       setShowClubOnboardingModal(false);
       setJoinClubCode('');
       setOnboardingError('');
-      triggerNotify('Successfully joined the club as Player!', 'success');
+      triggerNotify('Successfully joined the club as Player! Club sessions for your squads appear in your Training Planner.', 'success');
     } catch (err) {
       console.error("Error joining club:", err);
       setOnboardingError('Failed to join club. Please try again.');
