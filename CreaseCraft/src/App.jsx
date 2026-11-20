@@ -2777,21 +2777,23 @@ export default function App() {
             
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-                🏏 Create / Edit Club Training Plan
+                {isPersonalWorkspace
+                  ? (editingPlanId ? '👤 Edit Personal Session' : '👤 Plan a Personal Session')
+                  : '🏏 Create / Edit Club Training Plan'}
               </h3>
               <button onClick={() => setShowCreatePlanModal(false)} className="text-slate-400 hover:text-white font-bold text-xs">
                 ✕ Close
               </button>
             </div>
 
-            <form onSubmit={handleSaveZonePlan} className="space-y-4">
+            <form onSubmit={isPersonalWorkspace ? handleSavePersonalPlan : handleSaveZonePlan} className="space-y-4">
               <div>
                 <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Session Title</label>
                 <input
                   type="text"
                   value={newPlanTitle}
                   onChange={(e) => setNewPlanTitle(e.target.value)}
-                  placeholder="e.g. Tuesday Night Main Squad Microcycle"
+                  placeholder={isPersonalWorkspace ? "e.g. Solo Throwdown & Run-Up Rhythm" : "e.g. Tuesday Night Main Squad Microcycle"}
                   required
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500 font-semibold"
                 />
@@ -2814,229 +2816,287 @@ export default function App() {
                     type="text"
                     value={newPlanTime}
                     onChange={(e) => setNewPlanTime(e.target.value)}
-                    placeholder="e.g. 6:00 PM - 7:30 PM"
+                    placeholder={isPersonalWorkspace ? "e.g. 4:00 PM - 5:30 PM" : "e.g. 6:00 PM - 7:30 PM"}
                     required
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
 
-              <div className="space-y-4 pt-2">
-                <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
-                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 font-bold">
+              {isPersonalWorkspace ? (
+                <div className="space-y-4 pt-2">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Target Ball Volume</label>
                       <input
-                        type="checkbox"
-                        checked={newPollEnabled}
-                        onChange={(e) => setNewPollEnabled(e.target.checked)}
-                        className="accent-emerald-500 rounded h-4 w-4"
+                        type="number"
+                        min="0"
+                        value={personalPlanBalls}
+                        onChange={(e) => setPersonalPlanBalls(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
                       />
-                      Enable Attendance Poll for this Session
-                    </label>
-
-                    <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold ${newPlanDate < todayFormatted ? 'opacity-50 cursor-not-allowed' : 'text-emerald-400'}`}>
-                      <input
-                        type="checkbox"
-                        disabled={newPlanDate < todayFormatted}
-                        checked={newVisibleToPlayers}
-                        onChange={(e) => setNewVisibleToPlayers(e.target.checked)}
-                        className="accent-emerald-500 rounded h-4 w-4"
-                      />
-                      👁️ Visible to Players
-                    </label>
-                  </div>
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                    <h4 className="font-extrabold text-xs text-emerald-400">🏏 Zone 1: Net Lanes & Allocation</h4>
-                    <button
-                      type="button"
-                      onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '' }])}
-                      className="bg-emerald-500/20 text-emerald-400 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-500/40"
-                    >
-                      + Add Net Lane
-                    </button>
-                  </div>
-
-                  {newNetLanes.map((lane, index) => (
-                    <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                      <input
-                        type="text"
-                        value={lane.name}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
-                        }}
-                        className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
-                      />
-
-                      <div className="space-y-1">
-                        <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
-                        <div className="flex gap-2">
-                          <select
-                            onChange={(e) => {
-                              if (!e.target.value) return;
-                              const selected = e.target.value;
-                              const current = lane.batters ? lane.batters.split(', ').filter(Boolean) : [];
-                              if (!current.includes(selected)) {
-                                const updated = [...current, selected].join(', ');
-                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: updated } : l));
-                              }
-                              e.target.value = '';
-                            }}
-                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
-                          >
-                            <option value="">+ Add Batter from Club Roster...</option>
-                            {clubRosterList.map(member => (
-                              <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
-                            ))}
-                          </select>
-                          <input
-                            type="text"
-                            value={lane.batters}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: val } : l));
-                            }}
-                            placeholder="Or type batters manually..."
-                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Bowlers & Quotas</label>
-                        <div className="flex gap-2">
-                          <select
-                            onChange={(e) => {
-                              if (!e.target.value) return;
-                              const selected = e.target.value;
-                              const current = lane.bowlersText ? lane.bowlersText.split(', ').filter(Boolean) : [];
-                              const formatted = `${selected} (36b)`;
-                              if (!current.some(b => b.includes(selected))) {
-                                const updated = [...current, formatted].join(', ');
-                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: updated } : l));
-                              }
-                              e.target.value = '';
-                            }}
-                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
-                          >
-                            <option value="">+ Add Bowler from Club Roster...</option>
-                            {clubRosterList.map(member => (
-                              <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
-                            ))}
-                          </select>
-                          <input
-                            type="text"
-                            value={lane.bowlersText}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: val } : l));
-                            }}
-                            placeholder="Or type bowlers & balls (e.g. Pat Cummins (36b))"
-                            className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
-                          />
-                        </div>
-                      </div>
                     </div>
-                  ))}
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
-                  <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                    <h4 className="font-extrabold text-xs text-indigo-400">🏟️ Flexible Custom Zones & Activities</h4>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const nextNum = newCustomZones.length + 1;
-                        setNewCustomZones(prev => [
-                          ...prev, 
-                          { id: 'zone-' + Date.now(), title: `Zone ${nextNum}: Custom Activity`, activityText: '', squadIds: [] }
-                        ]);
-                      }}
-                      className="bg-indigo-500/20 text-indigo-300 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/40"
-                    >
-                      + Add Custom Zone
-                    </button>
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Target Effort (RPE 1-10)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={personalPlanRPE}
+                        onChange={(e) => setPersonalPlanRPE(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
                   </div>
 
-                  {newCustomZones.map((zone, zIdx) => {
-                    const availableSquads = currentClub.squads || [];
-                    return (
-                      <div key={zone.id || zIdx} className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                        <div className="flex justify-between items-center gap-2">
-                          <input
-                            type="text"
-                            value={zone.title}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, title: val } : z));
-                            }}
-                            placeholder="Zone Title (e.g. Zone 2: Center Wicket)"
-                            className="bg-slate-950 border border-slate-800 text-indigo-300 font-bold text-xs p-2 rounded-lg flex-grow"
-                          />
-                          {newCustomZones.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => setNewCustomZones(prev => prev.filter((_, idx) => idx !== zIdx))}
-                              className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1"
+                  <div className="space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800">
+                    <label className="text-[10px] text-emerald-400 font-extrabold uppercase block border-b border-slate-800 pb-1">
+                      📋 Planned Session Activities ({personalActivities.length} Steps)
+                    </label>
+                    {personalActivities.map((act, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-400 w-20 shrink-0">Activity {index + 1}:</span>
+                        <input
+                          type="text"
+                          value={act}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setPersonalActivities(prev => prev.map((a, i) => i === index ? val : a));
+                          }}
+                          className="flex-grow min-w-0 bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Technical Notes</label>
+                    <textarea
+                      rows="2"
+                      value={personalPlanNotes}
+                      onChange={(e) => setPersonalPlanNotes(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4 pt-2">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-800 pb-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-200 font-bold">
+                        <input
+                          type="checkbox"
+                          checked={newPollEnabled}
+                          onChange={(e) => setNewPollEnabled(e.target.checked)}
+                          className="accent-emerald-500 rounded h-4 w-4"
+                        />
+                        Enable Attendance Poll for this Session
+                      </label>
+
+                      <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold ${newPlanDate < todayFormatted ? 'opacity-50 cursor-not-allowed' : 'text-emerald-400'}`}>
+                        <input
+                          type="checkbox"
+                          disabled={newPlanDate < todayFormatted}
+                          checked={newVisibleToPlayers}
+                          onChange={(e) => setNewVisibleToPlayers(e.target.checked)}
+                          className="accent-emerald-500 rounded h-4 w-4"
+                        />
+                        👁️ Visible to Players
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                      <h4 className="font-extrabold text-xs text-emerald-400">🏏 Zone 1: Net Lanes & Allocation</h4>
+                      <button
+                        type="button"
+                        onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '' }])}
+                        className="bg-emerald-500/20 text-emerald-400 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-500/40"
+                      >
+                        + Add Net Lane
+                      </button>
+                    </div>
+
+                    {newNetLanes.map((lane, index) => (
+                      <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
+                        <input
+                          type="text"
+                          value={lane.name}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
+                          }}
+                          className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
+                        />
+
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
+                          <div className="flex gap-2">
+                            <select
+                              onChange={(e) => {
+                                if (!e.target.value) return;
+                                const selected = e.target.value;
+                                const current = lane.batters ? lane.batters.split(', ').filter(Boolean) : [];
+                                if (!current.includes(selected)) {
+                                  const updated = [...current, selected].join(', ');
+                                  setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: updated } : l));
+                                }
+                                e.target.value = '';
+                              }}
+                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
                             >
-                              ✕ Delete Zone
-                            </button>
-                          )}
+                              <option value="">+ Add Batter from Club Roster...</option>
+                              {clubRosterList.map(member => (
+                                <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={lane.batters}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, batters: val } : l));
+                              }}
+                              placeholder="Or type batters manually..."
+                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
+                            />
+                          </div>
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Free Text Activity Description</label>
-                          <textarea
-                            rows="2"
-                            value={zone.activityText}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, activityText: val } : z));
-                            }}
-                            placeholder="Describe the activity, scenario, or training focus..."
-                            className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assign Multiple Squads to this Activity</label>
-                          <div className="flex flex-wrap gap-1.5">
-                            {availableSquads.map(sq => {
-                              const isAssigned = (zone.squadIds || []).includes(sq.id);
-                              return (
-                                <button
-                                  key={sq.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const currentSqIds = zone.squadIds || [];
-                                    let updatedSqIds;
-                                    if (isAssigned) {
-                                      updatedSqIds = currentSqIds.filter(id => id !== sq.id);
-                                    } else {
-                                      updatedSqIds = [...currentSqIds, sq.id];
-                                    }
-                                    setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, squadIds: updatedSqIds } : z));
-                                  }}
-                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                                    isAssigned 
-                                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
-                                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
-                                  }`}
-                                >
-                                  {isAssigned ? '✓ ' : '+ '}{sq.name}
-                                </button>
-                              );
-                            })}
+                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Bowlers & Quotas</label>
+                          <div className="flex gap-2">
+                            <select
+                              onChange={(e) => {
+                                if (!e.target.value) return;
+                                const selected = e.target.value;
+                                const current = lane.bowlersText ? lane.bowlersText.split(', ').filter(Boolean) : [];
+                                const formatted = `${selected} (36b)`;
+                                if (!current.some(b => b.includes(selected))) {
+                                  const updated = [...current, formatted].join(', ');
+                                  setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: updated } : l));
+                                }
+                                e.target.value = '';
+                              }}
+                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 w-1/2"
+                            >
+                              <option value="">+ Add Bowler from Club Roster...</option>
+                              {clubRosterList.map(member => (
+                                <option key={member.id} value={member.name}>{member.name} ({member.roleString})</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={lane.bowlersText}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, bowlersText: val } : l));
+                              }}
+                              placeholder="Or type bowlers & balls (e.g. Pat Cummins (36b))"
+                              className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
+                            />
                           </div>
                         </div>
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
+
+                  <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                      <h4 className="font-extrabold text-xs text-indigo-400">🏟️ Flexible Custom Zones & Activities</h4>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextNum = newCustomZones.length + 1;
+                          setNewCustomZones(prev => [
+                            ...prev, 
+                            { id: 'zone-' + Date.now(), title: `Zone ${nextNum}: Custom Activity`, activityText: '', squadIds: [] }
+                          ]);
+                        }}
+                        className="bg-indigo-500/20 text-indigo-300 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/40"
+                      >
+                        + Add Custom Zone
+                      </button>
+                    </div>
+
+                    {newCustomZones.map((zone, zIdx) => {
+                      const availableSquads = currentClub.squads || [];
+                      return (
+                        <div key={zone.id || zIdx} className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                          <div className="flex justify-between items-center gap-2">
+                            <input
+                              type="text"
+                              value={zone.title}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, title: val } : z));
+                              }}
+                              placeholder="Zone Title (e.g. Zone 2: Center Wicket)"
+                              className="bg-slate-950 border border-slate-800 text-indigo-300 font-bold text-xs p-2 rounded-lg flex-grow"
+                            />
+                            {newCustomZones.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setNewCustomZones(prev => prev.filter((_, idx) => idx !== zIdx))}
+                                className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1"
+                              >
+                                ✕ Delete Zone
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[9px] text-slate-400 uppercase font-bold block">Free Text Activity Description</label>
+                            <textarea
+                              rows="2"
+                              value={zone.activityText}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, activityText: val } : z));
+                              }}
+                              placeholder="Describe the activity, scenario, or training focus..."
+                              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[9px] text-slate-400 uppercase font-bold block">Assign Multiple Squads to this Activity</label>
+                            <div className="flex flex-wrap gap-1.5">
+                              {availableSquads.map(sq => {
+                                const isAssigned = (zone.squadIds || []).includes(sq.id);
+                                return (
+                                  <button
+                                    key={sq.id}
+                                    type="button"
+                                    onClick={() => {
+                                      const currentSqIds = zone.squadIds || [];
+                                      let updatedSqIds;
+                                      if (isAssigned) {
+                                        updatedSqIds = currentSqIds.filter(id => id !== sq.id);
+                                      } else {
+                                        updatedSqIds = [...currentSqIds, sq.id];
+                                      }
+                                      setNewCustomZones(prev => prev.map((z, idx) => idx === zIdx ? { ...z, squadIds: updatedSqIds } : z));
+                                    }}
+                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                                      isAssigned 
+                                        ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50' 
+                                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                                    }`}
+                                  >
+                                    {isAssigned ? '✓ ' : '+ '}{sq.name}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
              {/* Form Action Buttons */}
               <div className="flex items-center gap-3 pt-2">
@@ -3052,7 +3112,7 @@ export default function App() {
                   type="submit"
                   className="w-2/3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3 rounded-xl transition-all shadow"
                 >
-                  Save club training plan ✓
+                  {isPersonalWorkspace ? 'Save personal session ✓' : 'Save club training plan ✓'}
                 </button>
               </div>
             </form>
