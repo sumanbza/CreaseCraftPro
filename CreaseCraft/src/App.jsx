@@ -544,9 +544,10 @@ export default function App() {
       if (!userClubIds.includes(p.clubId)) return false;
       if (p.visibleToPlayers === false && !isPlanCreatorOrAdmin) return false;
 
-      // Show the session only if it is open to the whole club, or one of its
-      // zones is assigned to my squad, or I am named in one of its net lanes.
-      // (Applies to coaches too: the full plan lives in the Club Training Planner.)
+      // Show the session only if one of its zones is assigned to my squad or I
+      // am named in one of its net lanes. Unassigned activities are shown to
+      // nobody. (Applies to coaches too: the full plan lives in the Club
+      // Training Planner.)
       if (!getMyPartOfPlan(p, mySquadsAndName(p.clubId)).visible) return false;
 
       return true;
@@ -1533,8 +1534,8 @@ export default function App() {
 
                       const slot = item.timeSlots?.[0];
                       const availableSquads = clubs.find(c => c.id === item.clubId)?.squads || [];
-                      // Club sessions show only my part: my squads' zones, lanes
-                      // naming me, and anything not assigned to anyone.
+                      // Club sessions show only my part: my squads' zones and the
+                      // lanes naming me. Unassigned activities are not shown.
                       const myPart = isPersonal ? null : getMyPartOfPlan(item, mySquadsAndName(item.clubId));
                       const myCustomZones = myPart ? myPart.zones : (slot?.customZones || []);
                       const myNetLanes = myPart ? myPart.lanes : (slot?.netLanes || []);
@@ -1822,7 +1823,7 @@ export default function App() {
 
                                   {myPart && myPart.hiddenCount > 0 && (
                                     <p className="text-[11px] text-slate-400">
-                                      Showing your part of this session. Zones and net lanes for other squads or players are hidden.
+                                      Showing your part of this session. Other zones and net lanes are hidden.
                                     </p>
                                   )}
 
