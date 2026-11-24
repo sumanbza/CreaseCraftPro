@@ -4,7 +4,8 @@
 // A plan's first time slot holds net lanes (players named as batters/bowlers)
 // and activity zones (each optionally assigned to squads).
 //   * A zone is shown to me only if it is assigned to one of my squads.
-//   * A net lane is shown to me only if it names me as a batter or bowler.
+//   * A net lane is shown to me if it is assigned to one of my squads or it
+//     names me as a batter or bowler.
 //   * Zones and lanes assigned to nobody are shown to nobody.
 //   * I see the session only if at least one zone or lane is mine, so a plan
 //     with no assignments at all appears in no member's Training Planner.
@@ -27,7 +28,9 @@ export function getMyPartOfPlan(plan, { squadIds = [], name = '' } = {}) {
   const zoneAssigned = (z) => Array.isArray(z.squadIds) && z.squadIds.length > 0;
   const zoneIsMine = (z) => zoneAssigned(z) && z.squadIds.some(id => mySquads.has(id));
   const laneNames = (l) => [...namesIn(l.batters), ...namesIn(l.bowlersText)];
-  const laneIsMine = (l) => !!myName && laneNames(l).includes(myName);
+  const laneIsMine = (l) =>
+    (Array.isArray(l.squadIds) && l.squadIds.some(id => mySquads.has(id)))
+    || (!!myName && laneNames(l).includes(myName));
 
   const myZones = zones.filter(zoneIsMine);
   const myLanes = lanes.filter(laneIsMine);
