@@ -828,7 +828,8 @@ export default function App() {
       setNewPollEnabled(planToEdit.pollEnabled !== false);
       setNewVisibleToPlayers(planToEdit.visibleToPlayers !== false);
       setNewNetLanes(
-        planToEdit.timeSlots?.[0]?.netLanes && planToEdit.timeSlots[0].netLanes.length > 0
+        // A saved empty list means the coach removed every lane: keep it empty.
+        Array.isArray(planToEdit.timeSlots?.[0]?.netLanes)
           ? planToEdit.timeSlots[0].netLanes.map(l => ({
               id: l.id || 'lane-' + Date.now() + '-' + Math.random(),
               name: l.name || 'Lane 1: High Pace',
@@ -3007,17 +3008,30 @@ export default function App() {
                       </button>
                     </div>
 
+                    {newNetLanes.length === 0 && (
+                      <p className="text-[11px] text-slate-500 italic">No net lanes in this session. Use "+ Add Net Lane" to add one.</p>
+                    )}
+
                     {newNetLanes.map((lane, index) => (
                       <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                        <input
-                          type="text"
-                          value={lane.name}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
-                          }}
-                          className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
-                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={lane.name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
+                            }}
+                            className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg flex-grow min-w-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setNewNetLanes(prev => prev.filter((_, idx) => idx !== index))}
+                            className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1 whitespace-nowrap"
+                          >
+                            ✕ Delete Lane
+                          </button>
+                        </div>
 
                         <div className="space-y-1">
                           <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
