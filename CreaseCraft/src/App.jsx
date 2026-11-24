@@ -20,6 +20,7 @@ import { getMyPartOfPlan } from './lib/planVisibility';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
+  sendPasswordResetEmail,
   signOut, 
   onAuthStateChanged 
 } from 'firebase/auth';
@@ -110,6 +111,8 @@ export default function App() {
   const [showClubOnboardingModal, setShowClubOnboardingModal] = useState(false);
   const [onboardingTab, setOnboardingTab] = useState('CREATE');
   const [authError, setAuthError] = useState('');
+  const [authInfo, setAuthInfo] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState('');
   const [expandedMembers, setExpandedMembers] = useState({});
   const [expandedRoles, setExpandedRoles] = useState({});
@@ -328,9 +331,59 @@ export default function App() {
     }
   }, [signedInUid, userProfile, myMembershipDocs]);
 
+  // Password reset: Firebase emails a link to its hosted reset page, which
+  // then returns to this app. The same confirmation is shown whether or not
+  // the address has an account, so the form can't be used to look up members.
+  const handlePasswordReset = async () => {
+    const address = email.trim();
+    setAuthError('');
+    setAuthInfo('');
+    setAuthBusy(true);
+    try {
+      try {
+        await sendPasswordResetEmail(auth, address, { url: window.location.origin });
+      } catch (err) {
+        // Preview links and other domains not on Firebase Auth's authorised
+        // list can't be used as the return address; send the plain email then.
+        if (['auth/unauthorized-continue-uri', 'auth/invalid-continue-uri'].includes(err.code)) {
+          await sendPasswordResetEmail(auth, address);
+        } else {
+          throw err;
+        }
+      }
+      setAuthInfo(`If an account exists for ${address}, we've emailed a link to reset your password. Check your inbox (and spam folder), then come back and sign in.`);
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        setAuthInfo(`If an account exists for ${address}, we've emailed a link to reset your password. Check your inbox (and spam folder), then come back and sign in.`);
+      } else if (err.code === 'auth/invalid-email' || err.code === 'auth/missing-email') {
+        setAuthError('Enter a valid email address.');
+      } else if (err.code === 'auth/too-many-requests') {
+        setAuthError('Too many attempts. Please wait a few minutes and try again.');
+      } else if (err.code === 'auth/network-request-failed') {
+        setAuthError("Couldn't reach the server. Check your connection and try again.");
+      } else {
+        console.error('Password reset error:', err);
+        setAuthError("Couldn't send the reset email. Please try again.");
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const switchAuthMode = (mode) => {
+    setAuthMode(mode);
+    setAuthError('');
+    setAuthInfo('');
+  };
+
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
+    if (authMode === 'RESET') {
+      await handlePasswordReset();
+      return;
+    }
     setAuthError('');
+    setAuthInfo('');
 
     try {
       if (authMode === 'SIGNUP') {
@@ -1067,22 +1120,28 @@ export default function App() {
           </div>
 
           {authError && (
-            <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-3 rounded-xl text-xs text-center font-bold">
+            <div role="alert" className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-3 rounded-xl text-xs text-center font-bold">
               ⚠️ {authError}
+            </div>
+          )}
+
+          {authInfo && (
+            <div role="status" className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 p-3 rounded-xl text-xs text-center font-semibold">
+              ✉️ {authInfo}
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs font-bold">
             <button
               type="button"
-              onClick={() => { setAuthMode('SIGNIN'); setAuthError(''); }}
+              onClick={() => switchAuthMode('SIGNIN')}
               className={`py-2 rounded-lg transition-all ${authMode === 'SIGNIN' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'}`}
             >
               🔑 Sign In
             </button>
             <button
               type="button"
-              onClick={() => { setAuthMode('SIGNUP'); setAuthError(''); }}
+              onClick={() => switchAuthMode('SIGNUP')}
               className={`py-2 rounded-lg transition-all ${authMode === 'SIGNUP' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'}`}
             >
               📝 Register
@@ -1090,6 +1149,13 @@ export default function App() {
           </div>
 
           <form onSubmit={handleAuthSubmit} className="space-y-4">
+
+            {authMode === 'RESET' && (
+              <div className="space-y-1">
+                <h2 className="text-sm font-extrabold text-white">Reset your password</h2>
+                <p className="text-xs text-slate-400">Enter the email you registered with and we'll send you a link to choose a new password.</p>
+              </div>
+            )}
 
             {authMode === 'SIGNUP' && (
               <div>
@@ -1117,24 +1183,50 @@ export default function App() {
               />
             </div>
 
-            <div>
-              <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
-              />
-            </div>
+            {authMode !== 'RESET' && (
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+                {authMode === 'SIGNIN' && (
+                  <div className="text-right mt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => switchAuthMode('RESET')}
+                      className="text-[11px] text-slate-400 hover:text-emerald-400 font-bold transition-all"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             <button
               type="submit"
-              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs py-3.5 rounded-xl transition-all shadow mt-2"
+              disabled={authBusy}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-wait text-slate-950 font-extrabold text-xs py-3.5 rounded-xl transition-all shadow mt-2"
             >
-              {authMode === 'SIGNIN' ? "Let's Play" : 'I Love Cricket'}
+              {authMode === 'RESET'
+                ? (authBusy ? 'Sending…' : 'Send reset link')
+                : authMode === 'SIGNIN' ? "Let's Play" : 'I Love Cricket'}
             </button>
+
+            {authMode === 'RESET' && (
+              <button
+                type="button"
+                onClick={() => switchAuthMode('SIGNIN')}
+                className="w-full text-xs text-slate-400 hover:text-emerald-400 font-bold transition-all"
+              >
+                ← Back to sign in
+              </button>
+            )}
           </form>
 
           <div className="text-center pt-2 border-t border-slate-800">
