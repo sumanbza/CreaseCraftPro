@@ -177,8 +177,8 @@ export default function App() {
 
   // Zone Allocator Form State
   const [newNetLanes, setNewNetLanes] = useState([
-    { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '' },
-    { id: 'lane-2', name: 'Lane 2: Technical Spin & Flight', batters: '', bowlersText: '' }
+    { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '', squadIds: [] },
+    { id: 'lane-2', name: 'Lane 2: Technical Spin & Flight', batters: '', bowlersText: '', squadIds: [] }
   ]);
   const [newCustomZones, setNewCustomZones] = useState([
     { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: 'T20 Death Overs Match Sim', squadIds: [] },
@@ -570,8 +570,8 @@ export default function App() {
       if (p.visibleToPlayers === false) return false;
       if (!canIn(p.clubId, 'view_squad_schedule')) return false;
 
-      // Show the session only if one of its zones is assigned to my squad or I
-      // am named in one of its net lanes. Unassigned activities are shown to
+      // Show the session only if one of its zones or net lanes is assigned to
+      // my squad, or I am named in one of its net lanes. Unassigned activities are shown to
       // nobody. (Applies to coaches too: the full plan lives in the Club
       // Training Planner.)
       if (!getMyPartOfPlan(p, mySquadsAndName(p.clubId)).visible) return false;
@@ -828,15 +828,17 @@ export default function App() {
       setNewPollEnabled(planToEdit.pollEnabled !== false);
       setNewVisibleToPlayers(planToEdit.visibleToPlayers !== false);
       setNewNetLanes(
-        planToEdit.timeSlots?.[0]?.netLanes && planToEdit.timeSlots[0].netLanes.length > 0
+        // A saved empty list means the coach removed every lane: keep it empty.
+        Array.isArray(planToEdit.timeSlots?.[0]?.netLanes)
           ? planToEdit.timeSlots[0].netLanes.map(l => ({
               id: l.id || 'lane-' + Date.now() + '-' + Math.random(),
               name: l.name || 'Lane 1: High Pace',
               batters: typeof l.batters === 'string' ? l.batters : (Array.isArray(l.batters) ? l.batters.join(', ') : ''),
-              bowlersText: typeof l.bowlersText === 'string' ? l.bowlersText : (Array.isArray(l.bowlers) ? l.bowlers.map(b => typeof b === 'object' ? `${b.userId || 'Bowler'} (${b.balls || 36}b)` : b).join(', ') : '')
+              bowlersText: typeof l.bowlersText === 'string' ? l.bowlersText : (Array.isArray(l.bowlers) ? l.bowlers.map(b => typeof b === 'object' ? `${b.userId || 'Bowler'} (${b.balls || 36}b)` : b).join(', ') : ''),
+              squadIds: Array.isArray(l.squadIds) ? l.squadIds : []
             }))
           : [
-              { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '' }
+              { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '', squadIds: [] }
             ]
       );
       if (planToEdit.timeSlots?.[0]?.customZones && planToEdit.timeSlots[0].customZones.length > 0) {
@@ -855,8 +857,8 @@ export default function App() {
       setNewPollEnabled(true);
       setNewVisibleToPlayers(true);
       setNewNetLanes([
-        { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '' },
-        { id: 'lane-2', name: 'Lane 2: Spin & Flight Control', batters: '', bowlersText: '' }
+        { id: 'lane-1', name: 'Lane 1: High Pace Match Sim', batters: '', bowlersText: '', squadIds: [] },
+        { id: 'lane-2', name: 'Lane 2: Spin & Flight Control', batters: '', bowlersText: '', squadIds: [] }
       ]);
       setNewCustomZones([
         { id: 'zone-2', title: 'Zone 2: Center Wicket Scenario', activityText: 'T20 Death Overs Match Sim', squadIds: [] },
@@ -1572,8 +1574,8 @@ export default function App() {
 
                       const slot = item.timeSlots?.[0];
                       const availableSquads = clubs.find(c => c.id === item.clubId)?.squads || [];
-                      // Club sessions show only my part: my squads' zones and the
-                      // lanes naming me. Unassigned activities are not shown.
+                      // Club sessions show only my part: zones and lanes assigned to
+                      // my squads, and lanes naming me. Unassigned activities are not shown.
                       const myPart = isPersonal ? null : getMyPartOfPlan(item, mySquadsAndName(item.clubId));
                       const myCustomZones = myPart ? myPart.zones : (slot?.customZones || []);
                       const myNetLanes = myPart ? myPart.lanes : (slot?.netLanes || []);
@@ -1877,6 +1879,9 @@ export default function App() {
                                           {myNetLanes.map((lane, idx) => (
                                             <div key={lane.id || idx} className="bg-slate-900 p-2 rounded border border-slate-800 text-[11px] space-y-1">
                                               <span className="font-bold text-slate-200 block text-emerald-300">{lane.name}</span>
+                                              {Array.isArray(lane.squadIds) && lane.squadIds.length > 0 && (
+                                                <span className="text-[10px] text-indigo-300 block">For: {lane.squadIds.map(squadNameById).join(', ')}</span>
+                                              )}
                                               <div className="text-slate-400">
                                                 <span>Batters: <strong className="text-slate-200">{(typeof lane.batters === 'string' && lane.batters.trim()) || 'Unassigned'}</strong></span>
                                               </div>
@@ -2245,6 +2250,11 @@ export default function App() {
                                         <div className="text-slate-400">
                                           <span>Bowlers: <strong className="text-emerald-400">{typeof lane.bowlersText === 'string' ? lane.bowlersText : 'Unassigned'}</strong></span>
                                         </div>
+                                        {Array.isArray(lane.squadIds) && lane.squadIds.length > 0 && (
+                                          <div className="text-slate-400">
+                                            <span>Squads: <strong className="text-indigo-300">{lane.squadIds.map(id => availableSquads.find(sq => sq.id === id)?.name).filter(Boolean).join(', ') || 'Unknown squad'}</strong></span>
+                                          </div>
+                                        )}
                                       </div>
                                     ))}
                                   </div>
@@ -2991,24 +3001,37 @@ export default function App() {
                       <h4 className="font-extrabold text-xs text-emerald-400">🏏 Zone 1: Net Lanes & Allocation</h4>
                       <button
                         type="button"
-                        onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '' }])}
+                        onClick={() => setNewNetLanes(prev => [...prev, { id: 'lane-' + Date.now(), name: 'Lane ' + (prev.length + 1) + ': Custom', batters: '', bowlersText: '', squadIds: [] }])}
                         className="bg-emerald-500/20 text-emerald-400 font-bold text-[10px] px-2.5 py-1 rounded-lg border border-emerald-500/40"
                       >
                         + Add Net Lane
                       </button>
                     </div>
 
+                    {newNetLanes.length === 0 && (
+                      <p className="text-[11px] text-slate-500 italic">No net lanes in this session. Use "+ Add Net Lane" to add one.</p>
+                    )}
+
                     {newNetLanes.map((lane, index) => (
                       <div key={lane.id || index} className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                        <input
-                          type="text"
-                          value={lane.name}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
-                          }}
-                          className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg w-full"
-                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={lane.name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, name: val } : l));
+                            }}
+                            className="bg-slate-950 border border-slate-800 text-emerald-300 font-bold text-xs p-2 rounded-lg flex-grow min-w-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setNewNetLanes(prev => prev.filter((_, idx) => idx !== index))}
+                            className="text-slate-500 hover:text-rose-400 text-xs font-bold px-2 py-1 whitespace-nowrap"
+                          >
+                            ✕ Delete Lane
+                          </button>
+                        </div>
 
                         <div className="space-y-1">
                           <label className="text-[9px] text-slate-400 uppercase font-bold block">Assigned Batters (Select from Club Roster)</label>
@@ -3076,6 +3099,35 @@ export default function App() {
                               placeholder="Or type bowlers & balls (e.g. Pat Cummins (36b))"
                               className="bg-slate-950 border border-slate-800 text-slate-200 text-xs p-2 rounded-xl focus:outline-none focus:border-emerald-500 flex-grow"
                             />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold block">Assign Squads to this Net Lane</label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(currentClub.squads || []).map(sq => {
+                              const isAssigned = (lane.squadIds || []).includes(sq.id);
+                              return (
+                                <button
+                                  key={sq.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const currentSqIds = lane.squadIds || [];
+                                    const updatedSqIds = isAssigned
+                                      ? currentSqIds.filter(id => id !== sq.id)
+                                      : [...currentSqIds, sq.id];
+                                    setNewNetLanes(prev => prev.map((l, idx) => idx === index ? { ...l, squadIds: updatedSqIds } : l));
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                                    isAssigned
+                                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                                  }`}
+                                >
+                                  {isAssigned ? '✓ ' : '+ '}{sq.name}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
