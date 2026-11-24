@@ -1,0 +1,54 @@
+# Builds and deploys the app to the live Firebase Hosting site whenever
+# changes reach the main branch (for example when a pull request is merged).
+# Only Hosting is deployed: Firestore rules and data migrations stay manual.
+#
+# Needs the repository secret FIREBASE_SERVICE_ACCOUNT_CREASECRAFT_23140,
+# created once by running `firebase init hosting:github` in CreaseCraft/.
+name: Deploy live site (main)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CreaseCraft/**'
+      - '.github/workflows/firebase-hosting-*.yml'
+  # Lets you redeploy main by hand from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two live deploys at once; a newer push waits for the current one.
+concurrency:
+  group: live-deploy
+  cancel-in-progress: false
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CreaseCraft
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: CreaseCraft/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to live site
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CREASECRAFT_23140 }}
+          projectId: creasecraft-23140
+          entryPoint: CreaseCraft
+          channelId: live
